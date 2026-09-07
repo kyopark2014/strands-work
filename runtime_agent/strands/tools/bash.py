@@ -47,6 +47,57 @@ def _ensure_cli_scripts_on_path() -> None:
     os.environ["PATH"] = os.pathsep.join(parts)
 
 
+def _ensure_user_site_on_sys_path() -> None:
+    """Expose pip --user site-packages to this process (and PYTHONPATH for children).
+
+    Runtime runs as appuser, so `pip install` lands under ~/.local. site.py only
+    adds USER_SITE at interpreter startup if that directory already exists; packages
+    installed later (bash/execute_code) stay invisible until we addsitedir here.
+    """
+    import site
+
+    try:
+        user_site = site.getusersitepackages()
+    except Exception:
+        return
+    if not user_site or not os.path.isdir(user_site):
+        return
+
+    # addsitedir also honors .pth files; skip if already on path
+    if user_site not in sys.path:
+        site.addsitedir(user_site)
+
+    py_path = os.environ.get("PYTHONPATH", "")
+    parts = [p for p in py_path.split(os.pathsep) if p]
+    if user_site not in parts:
+        parts.insert(0, user_site)
+        os.environ["PYTHONPATH"] = os.pathsep.join(parts)
+
+
+class _UserSiteRefreshFinder:
+    """Refresh USER_SITE on import so mid-exec `pip install` + `import` works."""
+
+    def find_spec(self, fullname, path=None, target=None):  # noqa: ARG002
+        import site
+
+        try:
+            user_site = site.getusersitepackages()
+        except Exception:
+            return None
+        if user_site and os.path.isdir(user_site) and user_site not in sys.path:
+            _ensure_user_site_on_sys_path()
+        return None
+
+
+def _install_user_site_import_hook() -> None:
+    if any(isinstance(f, _UserSiteRefreshFinder) for f in sys.meta_path):
+        return
+    sys.meta_path.insert(0, _UserSiteRefreshFinder())
+
+
+_install_user_site_import_hook()
+
+
 @tool
 def bash(command: str) -> str:
     """Execute a bash command from artifacts/ and return the result.
@@ -60,6 +111,7 @@ def bash(command: str) -> str:
         return "Error: empty command"
 
     _ensure_cli_scripts_on_path()
+    _ensure_user_site_on_sys_path()
     try:
         os.makedirs(workspace.ARTIFACTS_DIR, exist_ok=True)
     except OSError as e:
@@ -101,6 +153,8 @@ def bash(command: str) -> str:
         logger.warning("bash OSError: %s", e)
         return f"Error: OS error ({type(e).__name__})"
 
+    # pip install may have just created ~/.local/.../site-packages
+    _ensure_user_site_on_sys_path()
     parts = []
     if result.stdout:
         parts.append(f"STDOUT:\n{result.stdout}")

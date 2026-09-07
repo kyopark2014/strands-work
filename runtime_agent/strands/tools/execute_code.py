@@ -19,6 +19,7 @@ import utils
 import tools.workspace as workspace
 from tools.workspace import WORKING_DIR, REPO_ROOT, ARTIFACTS_REL
 from tools.s3_upload import build_s3_key
+from tools.bash import _ensure_user_site_on_sys_path
 from urllib.parse import quote
 
 logger = logging.getLogger("strands-agent")
@@ -273,6 +274,7 @@ def execute_code(code: str) -> str:
         old_stdout, old_stderr = sys.stdout, sys.stderr
         sys.stdout, sys.stderr = stdout_capture, stderr_capture
 
+        _ensure_user_site_on_sys_path()
         _ensure_matplotlib_runtime()
         # Intentional sandboxed Python tool: cwd pinned to workspace.ARTIFACTS_DIR, I/O
         # captured, size/null validated above. Not for untrusted multi-tenant use.
