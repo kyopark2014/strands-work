@@ -80,6 +80,8 @@ export interface StreamEvent {
   skillName?: string;
   input?: unknown;
   toolUseId?: string;
+  /** Set on done when the user stopped the run (cancel). */
+  cancelled?: boolean;
 }
 
 export type TaskRunStatus =
