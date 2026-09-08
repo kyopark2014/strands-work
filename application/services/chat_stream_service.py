@@ -169,19 +169,14 @@ class ChatStreamService:
                     for i in range(len(tool_events) - 1, -1, -1):
                         existing = tool_events[i]
                         if (
-                            existing.get("type") != "tool"
-                            or existing.get("tool") != tool_name
+                            existing.get("type") == "tool"
+                            and existing.get("tool") == tool_name
                         ):
-                            continue
-                        existing_id = str(existing.get("toolUseId") or "")
-                        # Only upgrade placeholder ids (missing or equal to tool name).
-                        if existing_id and existing_id != tool_name:
-                            continue
-                        if mapped.get("toolUseId") and mapped["toolUseId"] != tool_name:
-                            tool_events[i] = mapped
-                        else:
-                            tool_events[i] = {**existing, **mapped}
-                        return
+                            if mapped.get("toolUseId") and mapped["toolUseId"] != tool_name:
+                                tool_events[i] = mapped
+                            else:
+                                tool_events[i] = {**existing, **mapped}
+                            return
         tool_events.append(mapped)
 
     def track_tool_event(
@@ -752,7 +747,7 @@ class ChatStreamService:
                 yield sse_event(
                     {
                         "type": "done",
-                        "content": "",
+                        "content": final_content,
                         "images": images,
                         "tool_events": events,
                         "cancelled": True,
