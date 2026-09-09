@@ -14,7 +14,7 @@ except ImportError:
     import utils
     import bedrock_data_retention
 
-from langchain_aws import ChatBedrock
+from langchain_aws import ChatBedrock, ChatBedrockConverse
 from langchain_openai import ChatOpenAI
 from botocore.config import Config
 
@@ -54,7 +54,7 @@ def update(model_name_param):
         logger.info(f"model_type: {model_type}")
 
 def _build_openai_chat(profile: dict, max_output_tokens: int):
-    """Build OpenAI-on-Bedrock chat model (Mantle Responses API or invoke_model)."""
+    """Build OpenAI-on-Bedrock chat model (Mantle Responses API or Converse)."""
     bedrock_region = profile["bedrock_region"]
     model_id = profile["model_id"]
     mantle_api = profile.get("mantle_api", "chat")
@@ -73,28 +73,15 @@ def _build_openai_chat(profile: dict, max_output_tokens: int):
             max_tokens=max_output_tokens,
         )
 
-    try:
-        boto3_bedrock = boto3.client(
-            service_name="bedrock-runtime",
-            region_name=bedrock_region,
-            config=Config(
-                retries={"max_attempts": 30},
-                read_timeout=300,
-            ),
-        )
-    except Exception:
-        logger.exception("Failed to create bedrock-runtime client")
-        raise
-    chat = ChatBedrock(
-        model_id=model_id,
-        client=boto3_bedrock,
-        model_kwargs={
-            "max_tokens": max_output_tokens,
-        },
+    # GPT-5.6 / Astra etc.: Bedrock Converse + inference profile (us.openai.*)
+    converse_chat = ChatBedrockConverse(
+        model=model_id,
         region_name=bedrock_region,
+        max_tokens=max_output_tokens,
+        provider="openai",
     )
-    chat.streaming = False
-    return chat
+    converse_chat.streaming = False
+    return converse_chat
 
 def get_chat(extended_thinking=None):
     # Set default value if not provided or invalid

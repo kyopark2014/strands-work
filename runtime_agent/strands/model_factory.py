@@ -290,8 +290,19 @@ def get_model(session_id: str | None = None):
             **guardrail_kwargs,
         )
     elif model_type == "openai":
-        model = _build_mantle_openai_model(
-            profile, boto_session, maxOutputTokens, session_id=session_id
-        )
+        # Mantle Responses/Chat when mantle_api is set; else Bedrock Converse
+        # inference profiles (us.openai.gpt-5.6-* / gpt-6-astra).
+        if profile.get("mantle_api"):
+            model = _build_mantle_openai_model(
+                profile, boto_session, maxOutputTokens, session_id=session_id
+            )
+        else:
+            model = BedrockModel(
+                boto_session=boto_session,
+                boto_client_config=bedrock_config,
+                model_id=model_id,
+                max_tokens=maxOutputTokens,
+                **guardrail_kwargs,
+            )
 
     return model
