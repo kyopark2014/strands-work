@@ -14,6 +14,7 @@ from application.api.routes_config import router as config_router
 from application.api.routes_tasks import router as tasks_router
 from application.api.routes_chat import router as chat_router
 from application.api.routes_files import router as files_router
+from application.api.routes_artifacts import router as artifacts_router
 from application.api.routes_rag import router as rag_router
 from application.security_headers import SecurityHeadersMiddleware
 from application.task_store import init_db
@@ -87,6 +88,7 @@ app.include_router(config_router)
 app.include_router(tasks_router)
 app.include_router(chat_router)
 app.include_router(files_router)
+app.include_router(artifacts_router)
 app.include_router(rag_router)
 
 

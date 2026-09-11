@@ -1,6 +1,7 @@
 """S3 helpers for the chat module. Imports chat for shared module state."""
 
 import logging
+import os
 
 import utils
 from botocore.exceptions import ClientError
@@ -161,7 +162,11 @@ def upload_to_s3_artifacts(file_bytes, file_name):
         content_type = utils.get_contents_type(file_name)
         logger.info(f"content_type: {content_type}")
 
-        s3_key = f"artifacts/{file_name}"
+        from tools.workspace import sanitize_user_path_segment
+
+        user_seg = sanitize_user_path_segment(getattr(chat, "user_id", None)) or "default"
+        safe_name = os.path.basename(file_name) or file_name
+        s3_key = f"artifacts/{user_seg}/{safe_name}"
 
         user_meta = {  # user-defined metadata
             "content_type": content_type,
@@ -177,7 +182,13 @@ def upload_to_s3_artifacts(file_bytes, file_name):
         )
         logger.info(f"upload response: {response}")
 
-        url = chat.path + "/artifacts/" + parse.quote(file_name)
+        url = (
+            chat.path
+            + "/artifacts/"
+            + parse.quote(user_seg)
+            + "/"
+            + parse.quote(safe_name)
+        )
         return url
 
     except Exception as e:

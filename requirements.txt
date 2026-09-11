@@ -46,4 +46,5 @@ sseclient-py
 cryptography
 pymupdf
 python-docx
+markdown>=3.5
 httpx2

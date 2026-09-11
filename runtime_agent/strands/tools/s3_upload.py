@@ -53,12 +53,32 @@ def _safe_basename(filepath: str) -> str:
     return _UNSAFE_KEY_CHARS.sub("_", name)
 
 
+def _artifact_user_segment() -> str:
+    """Current chat user segment for S3 artifact keys (artifacts/{user}/…)."""
+    try:
+        import chat
+
+        return (
+            workspace.sanitize_user_path_segment(getattr(chat, "user_id", None))
+            or "default"
+        )
+    except Exception:
+        return "default"
+
+
+def _artifacts_object_key(basename: str) -> str:
+    return f"artifacts/{_artifact_user_segment()}/{basename}"
+
+
 def build_s3_key(filepath: str, *, content_type: str = "") -> str:
     """Build an S3 object key safe for PutObject and CloudFront sharing.
 
     Agent tools sometimes pass paths like ``../../app/contents/foo.png``. S3
     rejects keys containing ``..`` (400 Bad Request), and CloudFront only
     serves ``/artifacts/*``, ``/images/*``, and ``/docs/*``.
+
+    Artifact keys are ``artifacts/{user_id}/{filename}`` so each user's files
+    are isolated (viewer auth matches the same layout).
     """
     normalized = os.path.normpath(filepath.replace("\\", "/")).lstrip("/")
     # Drop leading ../ segments after normpath of relative inputs.
@@ -69,12 +89,20 @@ def build_s3_key(filepath: str, *, content_type: str = "") -> str:
 
     lower = normalized.lower()
     basename = _safe_basename(normalized)
+    user_seg = _artifact_user_segment()
 
     if lower.startswith("application/artifacts/"):
-        return f"artifacts/{_safe_basename(normalized[len('application/artifacts/'):])}"
+        return _artifacts_object_key(
+            _safe_basename(normalized[len("application/artifacts/") :])
+        )
     if lower.startswith("artifacts/"):
         rest = normalized.split("/", 1)[1] if "/" in normalized else basename
-        return f"artifacts/{_safe_basename(rest)}"
+        rest_parts = [p for p in rest.split("/") if p]
+        # Avoid artifacts/{user}/{user}/... when caller already included user_id.
+        if rest_parts and rest_parts[0] == user_seg:
+            leaf = _safe_basename("/".join(rest_parts[1:]) or rest_parts[0])
+            return f"artifacts/{user_seg}/{leaf}"
+        return _artifacts_object_key(_safe_basename(rest))
     if lower.startswith("images/") or lower.startswith("application/images/"):
         return f"images/{basename}"
     if lower.startswith("docs/") or lower.startswith("application/docs/"):
@@ -98,7 +126,7 @@ def build_s3_key(filepath: str, *, content_type: str = "") -> str:
         for ext in (".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".csv", ".txt", ".md")
     ):
         # Prefer artifacts for agent-produced files when path was ambiguous.
-        return f"artifacts/{basename}"
+        return _artifacts_object_key(basename)
 
     return f"docs/{basename}"
 

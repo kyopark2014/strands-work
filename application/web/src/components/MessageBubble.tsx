@@ -39,15 +39,51 @@ function fileNameFromRef(ref: string): string {
   }
 }
 
+/** Rewrite CloudFront/S3 artifact .md/.json/.csv links to the in-app viewer. */
+function resolveArtifactViewerHref(href: string | undefined): string | undefined {
+  if (!href) return href;
+  try {
+    const url = new URL(href, window.location.origin);
+    // Nested: /artifacts/{user}/rest.ext
+    let match = url.pathname.match(
+      /\/artifacts\/[^/]+\/(.+\.(?:md|markdown|json|csv))$/i,
+    );
+    let rest: string | undefined;
+    if (match) {
+      rest = decodeURIComponent(match[1]);
+    } else {
+      // Legacy flat: /artifacts/file.ext
+      match = url.pathname.match(
+        /\/artifacts\/([^/]+\.(?:md|markdown|json|csv))$/i,
+      );
+      if (match) rest = decodeURIComponent(match[1]);
+    }
+    if (!rest || rest.includes("..")) return href;
+    const encoded = rest
+      .split("/")
+      .filter(Boolean)
+      .map((part) => encodeURIComponent(part))
+      .join("/");
+    return `/api/artifacts/view/${encoded}`;
+  } catch {
+    return href;
+  }
+}
+
 /** Map an attachment ref to a browser-openable URL (new tab), if possible. */
 function resolveAttachmentOpenUrl(ref: string): string | null {
   const trimmed = (ref || "").trim();
   if (!trimmed) return null;
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
-  if (trimmed.startsWith("/api/")) return trimmed;
 
   const name = fileNameFromRef(trimmed);
   if (!name) return null;
+
+  // CloudFront artifact text files → authenticated artifact viewer.
+  const artifactViewer = resolveArtifactViewerHref(trimmed);
+  if (artifactViewer && artifactViewer !== trimmed) return artifactViewer;
+
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith("/api/")) return trimmed;
 
   // Load-files workspace paths → authenticated viewer API.
   return `/api/files/view/${encodeURIComponent(name)}`;
@@ -167,11 +203,14 @@ function MarkdownText({ content }: { content: string }) {
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       components={{
-        a: ({ href, children, ...props }) => (
-          <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
-            {children}
-          </a>
-        ),
+        a: ({ href, children, ...props }) => {
+          const openHref = resolveArtifactViewerHref(href);
+          return (
+            <a href={openHref} target="_blank" rel="noopener noreferrer" {...props}>
+              {children}
+            </a>
+          );
+        },
       }}
     >
       {content}
