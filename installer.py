@@ -9521,6 +9521,12 @@ def main():
             alb_info, s3_bucket_name, origin_header_value
         )
         logger.info(f"CloudFront distribution created...")
+
+        # my-schedule: DynamoDB + Lambda + EventBridge Scheduler
+        schedule_info = deploy_schedule_infrastructure(
+            app_base_url=f"https://{cloudfront_info['domain']}",
+            ecs_task_role_name=ecs_task_role_name,
+        )
         
         # 8. Build and push Docker image to ECR, then deploy ECS service
         sync_application_capability_lists()
