@@ -1418,6 +1418,17 @@ Sync 우선순위: Configure Sources + `raw/`에 파일이 있으면 함께 추�
 | `POST /api/wiki/urls` | URL ingest |
 | `PATCH /api/wiki/pattern` | 시각화 패턴 |
 
+
+### Schedule
+
+EventBridge Scheduler 기반 예약 실행(`my-schedule`)이 포함되어 있습니다. Skill로 대화방에 job을 등록하면 DynamoDB + Scheduler에 저장되고, 시각에 맞춰 Lambda → ECS가 prompt를 실행한 뒤 같은 대화방에 결과를 저장합니다. Settings → **Schedule List**에서 조회·삭제할 수 있습니다.
+
+배포(기존 스택):
+
+```bash
+python3 installer.py --schedule-only
+```
+
 ## 배포하기
 
 아래와 같이 EC2를 이용해 배포 환경을 구성합니다.

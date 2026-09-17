@@ -109,6 +109,7 @@ class AgentCoreService:
         guardrail_enabled=None,
         memory_enabled=None,
         files=None,
+        task_id=None,
     ) -> str:
         return json.dumps(
             {
@@ -125,6 +126,7 @@ class AgentCoreService:
                 "memory_enabled": (
                     bool(memory_enabled) if memory_enabled is not None else True
                 ),
+                "task_id": task_id or "",
                 "files": files or [],
             }
         )
@@ -190,6 +192,7 @@ class AgentCoreService:
         guardrail_enabled=None,
         memory_enabled=None,
         files=None,
+        task_id=None,
     ):
         tool_info_list.clear()
         tool_result_list.clear()
@@ -213,6 +216,7 @@ class AgentCoreService:
             guardrail_enabled=guardrail_enabled,
             memory_enabled=memory_enabled,
             files=files,
+            task_id=task_id,
         )
 
         agent_runtime_arn = self.resolve_runtime_arn("strands")
@@ -323,6 +327,7 @@ def run_agent(
     guardrail_enabled=None,
     memory_enabled=None,
     files=None,
+        task_id=None,
 ):
     return AgentCoreService().run(
         prompt,
@@ -336,4 +341,5 @@ def run_agent(
         guardrail_enabled=guardrail_enabled,
         memory_enabled=memory_enabled,
         files=files,
+            task_id=task_id,
     )

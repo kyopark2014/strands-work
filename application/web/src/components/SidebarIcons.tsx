@@ -242,3 +242,27 @@ export function WikiIcon({ className }: IconProps) {
     </svg>
   );
 }
+
+export function ScheduleIcon({ className }: IconProps) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 16 16"
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.15"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <rect x="2.5" y="3.5" width="11" height="10" rx="1.5" />
+      <path d="M5 2.5v2" />
+      <path d="M11 2.5v2" />
+      <path d="M2.5 6.5h11" />
+      <path d="M6 9h1" />
+      <path d="M9 9h1" />
+      <path d="M6 11.5h1" />
+      <path d="M9 11.5h1" />
+    </svg>
+  );
+}

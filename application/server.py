@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from application.api.routes_auth import router as auth_router
 from application.api.routes_graph import router as graph_router
 from application.api.routes_wiki import router as wiki_router
+from application.api.routes_schedules import router as schedules_router
 from application.api.routes_config import router as config_router
 from application.api.routes_tasks import router as tasks_router
 from application.api.routes_chat import router as chat_router
@@ -65,6 +66,13 @@ async def lifespan(app: FastAPI):
             "Task store using local SQLite; "
             "per-user DBs under session_storage/{user}/{user}.db",
         )
+    try:
+        from application import schedule_service
+
+        result = schedule_service.cleanup_completed_schedules()
+        logger.info("Startup schedule cleanup: %s", result)
+    except Exception:
+        logger.exception("Startup schedule cleanup failed (non-fatal)")
     yield
     flush_persist()
     logger.info("Task store shutdown persist complete")
@@ -84,6 +92,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.include_router(auth_router)
 app.include_router(graph_router)
 app.include_router(wiki_router)
+app.include_router(schedules_router)
 app.include_router(config_router)
 app.include_router(tasks_router)
 app.include_router(chat_router)

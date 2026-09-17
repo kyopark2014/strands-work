@@ -665,4 +665,34 @@ export const api = {
 
     uiLog("chat:stream end", { taskId, eventCount });
   },
+  listSchedules: (taskId?: string) => {
+    const qs = taskId ? `?task_id=${encodeURIComponent(taskId)}` : "";
+    return request<{ ok: boolean; jobs: ScheduleJob[] }>(`/api/schedules${qs}`);
+  },
+  deleteSchedule: (jobId: string) =>
+    request<{ ok: boolean; job_id: string }>(
+      `/api/schedules/${encodeURIComponent(jobId)}`,
+      { method: "DELETE" },
+    ),
+
 };
+
+export interface ScheduleJob {
+  job_id: string;
+  user_id?: string;
+  task_id: string;
+  runtime_session_id?: string;
+  prompt: string;
+  title?: string;
+  schedule_expression: string;
+  timezone?: string;
+  enabled?: boolean;
+  schedule_name?: string;
+  schedule_arn?: string;
+  created_at?: string;
+  updated_at?: string;
+  last_run_at?: string;
+  last_run_status?: string;
+  last_error?: string;
+}
+

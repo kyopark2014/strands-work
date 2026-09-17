@@ -517,6 +517,7 @@ def _project_secret_resource_arns(config) -> list:
     project_name = config.get("projectName", "agentcore")
     secret_arns = [
         f"arn:aws:secretsmanager:{region}:{account_id}:secret:tavilyapikey-{project_name}*",
+        f"arn:aws:secretsmanager:{region}:{account_id}:secret:{project_name}/schedule-agent-token*",
     ]
     kb_name = (config.get("knowledge_base_name") or "").strip()
     if kb_name and kb_name != project_name:

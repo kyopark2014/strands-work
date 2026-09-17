@@ -39,6 +39,9 @@ cloudfront_client = boto3.client("cloudfront", region_name=region)
 bedrock_agent_client = boto3.client("bedrock-agent", region_name=region)
 s3vectors_client = boto3.client("s3vectors", region_name=region)
 ecs_client = boto3.client("ecs", region_name=region)
+lambda_client = boto3.client("lambda", region_name=region)
+dynamodb_client = boto3.client("dynamodb", region_name=region)
+scheduler_client = boto3.client("scheduler", region_name=region)
 ecr_client = boto3.client("ecr", region_name=region)
 logs_client = boto3.client("logs", region_name=region)
 agentcore_control_client = boto3.client(
@@ -59,6 +62,12 @@ vector_bucket_name = f"{project_name}-{account_id}"
 COGNITO_CLIENT_NAME = f"{project_name}-web-ui"
 ALB_ORIGIN_HEADER_SECRET_NAME = f"{project_name}/cloudfront-alb-origin-header"
 SESSION_SIGNING_KEY_SECRET_NAME = f"{project_name}/session-signing-key"
+SCHEDULE_AGENT_TOKEN_SECRET_NAME = f"{project_name}/schedule-agent-token"
+SCHEDULE_JOBS_TABLE_NAME = f"dynamodb-{project_name}-schedules"
+SCHEDULE_LAMBDA_NAME = f"lambda-schedule-for-{project_name}"
+SCHEDULE_LAMBDA_ROLE_NAME = f"role-lambda-schedule-for-{project_name}-{region}"
+SCHEDULER_INVOKE_ROLE_NAME = f"role-scheduler-invoke-for-{project_name}-{region}"
+SCHEDULE_GROUP_NAME = f"schedule-group-{project_name}"
 CLOUDFRONT_SIGNING_KEY_SECRET_NAME = f"{project_name}/cloudfront-signing-key"
 
 # Configure logging
@@ -1814,6 +1823,71 @@ def _find_cognito_user_pool_id(pool_name: str):
         if not next_token:
             return None
 
+
+
+def delete_schedule_infrastructure() -> None:
+    """Delete my-schedule Lambda, DynamoDB, Scheduler group, and related secrets/roles."""
+    logger.info("Deleting my-schedule infrastructure")
+
+    # Delete schedules in the group first (group cannot be deleted while non-empty)
+    try:
+        token = None
+        while True:
+            kwargs = {"GroupName": SCHEDULE_GROUP_NAME, "MaxResults": 100}
+            if token:
+                kwargs["NextToken"] = token
+            resp = scheduler_client.list_schedules(**kwargs)
+            for item in resp.get("Schedules") or []:
+                name = item.get("Name")
+                if not name:
+                    continue
+                try:
+                    scheduler_client.delete_schedule(
+                        Name=name, GroupName=SCHEDULE_GROUP_NAME
+                    )
+                    logger.info(f"  ✓ Deleted schedule: {name}")
+                except ClientError as e:
+                    logger.warning(f"  Could not delete schedule {name}: {e}")
+            token = resp.get("NextToken")
+            if not token:
+                break
+    except ClientError as e:
+        logger.warning(f"  Could not list schedules: {e}")
+
+    try:
+        scheduler_client.delete_schedule_group(Name=SCHEDULE_GROUP_NAME)
+        logger.info(f"  ✓ Deleted schedule group: {SCHEDULE_GROUP_NAME}")
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code not in ("ResourceNotFoundException", "ResourceNotFound"):
+            logger.warning(f"  Could not delete schedule group: {e}")
+
+    try:
+        lambda_client.delete_function(FunctionName=SCHEDULE_LAMBDA_NAME)
+        logger.info(f"  ✓ Deleted Lambda: {SCHEDULE_LAMBDA_NAME}")
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code not in ("ResourceNotFoundException", "ResourceNotFound"):
+            logger.warning(f"  Could not delete Lambda: {e}")
+
+    try:
+        dynamodb_client.delete_table(TableName=SCHEDULE_JOBS_TABLE_NAME)
+        logger.info(f"  ✓ Deleted DynamoDB table: {SCHEDULE_JOBS_TABLE_NAME}")
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code not in ("ResourceNotFoundException", "ResourceNotFound"):
+            logger.warning(f"  Could not delete DynamoDB table: {e}")
+
+    try:
+        secretsmanager_client.delete_secret(
+            SecretId=SCHEDULE_AGENT_TOKEN_SECRET_NAME,
+            ForceDeleteWithoutRecovery=True,
+        )
+        logger.info(f"  ✓ Deleted secret: {SCHEDULE_AGENT_TOKEN_SECRET_NAME}")
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code not in ("ResourceNotFoundException", "ResourceNotFound"):
+            logger.warning(f"  Could not delete schedule token secret: {e}")
 
 def delete_session_signing_key_secret() -> None:
     """Delete HMAC session cookie signing key from Secrets Manager."""

@@ -1,4 +1,5 @@
 import logging
+import os
 import sys
 import asyncio
 
@@ -144,6 +145,18 @@ async def _run_agent_strands(payload):
     cancel_id = runtime_session_id or strands_agent.get_runtime_session_id()
     if cancel_id:
         run_cancel.clear(cancel_id)
+
+    task_id = (payload.get("task_id") or "").strip()
+    if task_id:
+        os.environ["TASK_ID"] = task_id
+    else:
+        os.environ.pop("TASK_ID", None)
+    if runtime_session_id:
+        os.environ["RUNTIME_SESSION_ID"] = str(runtime_session_id)
+    else:
+        os.environ.pop("RUNTIME_SESSION_ID", None)
+    logger.info(f"task_id: {task_id or '(none)'}")
+
     cancelled = False
 
     skill_mode = payload.get("skill_mode")
