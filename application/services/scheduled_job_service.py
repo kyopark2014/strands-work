@@ -61,8 +61,11 @@ def run_scheduled_job(job_id: str) -> dict[str, Any]:
         files=[],
     )
 
-    # Drain SSE-style queue until worker finishes (no HTTP client).
+    # Drain the same notification queue as live chat, accumulating tool_events
+    # so history shows tool use/results (not just the final text).
     tool_events: list[dict[str, Any]] = []
+    tool_meta: dict[str, dict[str, Any]] = {}
+    streamed_text = ""
     while True:
         try:
             item = message_queue.get(timeout=600)
@@ -71,22 +74,36 @@ def run_scheduled_job(job_id: str) -> dict[str, Any]:
             raise TimeoutError("scheduled job timed out")
         if item is None:
             break
-        # Discard stream events; final content is in result_holder.
+        streamed_text, _ = service._consume_queue_item(
+            item,
+            tool_events=tool_events,
+            tool_meta=tool_meta,
+            streamed_text=streamed_text,
+        )
 
     error = result_holder.get("error")
     if error:
+        content, events = service.build_partial_error_payload(
+            tool_events=tool_events,
+            streamed_text=streamed_text,
+            error_text=str(error),
+        )
         task_store.add_message(
             task_id,
             "assistant",
-            f"Error: {error}",
+            content,
             user_id=user_id,
+            tool_events=events,
         )
         schedule_store.mark_run(job_id, status="error", error=str(error)[:500])
         flush_persist(user_id)
         return {"ok": False, "status": "error", "error": error}
 
-    content = result_holder.get("content") or ""
-    images = result_holder.get("images") or []
+    content, images, tool_events = service._build_final_payload(
+        result_holder=result_holder,
+        tool_events=tool_events,
+        streamed_text=streamed_text,
+    )
     task_store.add_message(
         task_id,
         "assistant",
