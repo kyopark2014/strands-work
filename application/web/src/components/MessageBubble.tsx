@@ -44,19 +44,28 @@ function resolveArtifactViewerHref(href: string | undefined): string | undefined
   if (!href) return href;
   try {
     const url = new URL(href, window.location.origin);
-    // Nested: /artifacts/{user}/rest.ext
+    const ext = String.raw`.+\.(?:md|markdown|json|csv)`;
+    // Workspace: /{user}/artifacts/rest.ext
     let match = url.pathname.match(
-      /\/artifacts\/[^/]+\/(.+\.(?:md|markdown|json|csv))$/i,
+      new RegExp(String.raw`\/[^/]+\/artifacts\/(${ext})$`, "i"),
     );
     let rest: string | undefined;
     if (match) {
       rest = decodeURIComponent(match[1]);
     } else {
-      // Legacy flat: /artifacts/file.ext
+      // Legacy copy: /artifacts/{user}/rest.ext
       match = url.pathname.match(
-        /\/artifacts\/([^/]+\.(?:md|markdown|json|csv))$/i,
+        new RegExp(String.raw`\/artifacts\/[^/]+\/(${ext})$`, "i"),
       );
-      if (match) rest = decodeURIComponent(match[1]);
+      if (match) {
+        rest = decodeURIComponent(match[1]);
+      } else {
+        // Legacy flat: /artifacts/file.ext
+        match = url.pathname.match(
+          new RegExp(String.raw`\/artifacts\/([^/]+\.(?:md|markdown|json|csv))$`, "i"),
+        );
+        if (match) rest = decodeURIComponent(match[1]);
+      }
     }
     if (!rest || rest.includes("..")) return href;
     const encoded = rest

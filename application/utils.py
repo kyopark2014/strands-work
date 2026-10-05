@@ -21,8 +21,8 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 config_path = os.path.join(script_dir, "config.json")
 favorite_tools_path = os.path.join(script_dir, "favorite_tools.json")
 
-# ECS: /mnt/app-data (prefix app-data/) for tasks.db, graph, settings.
-# Runtime: /mnt/workspace (prefix agentcore-sessions/) for skills/artifacts/checkpoints.
+# ECS: /mnt/app-data is the storage bucket root (tasks.db, graph, settings).
+# Runtime: /mnt/workspace is the same bucket root (skills, artifacts, checkpoints).
 def _default_session_storage_dir() -> str:
     """Prefer ECS app-data mount, then Runtime workspace, then local fallback."""
     for candidate in ("/mnt/app-data", "/mnt/workspace"):
@@ -33,8 +33,21 @@ def _default_session_storage_dir() -> str:
 
 SESSION_STORAGE_DIR = os.environ.get("SESSION_STORAGE_DIR") or _default_session_storage_dir()
 
-# S3 Files FS prefix for Runtime workspace → s3://{bucket}/agentcore-sessions/
-S3_FILES_SESSION_PREFIX = "agentcore-sessions"
+# Empty when the S3 Files mount is the storage bucket root.
+S3_FILES_SESSION_PREFIX = ""
+
+
+def session_object_key(*parts: str) -> str:
+    """Join an object key on the session mount, omitting an empty prefix."""
+    bits: list[str] = []
+    prefix = (S3_FILES_SESSION_PREFIX or "").strip("/")
+    if prefix:
+        bits.append(prefix)
+    for part in parts:
+        piece = str(part or "").strip("/")
+        if piece:
+            bits.append(piece)
+    return "/".join(bits)
 
 
 def sanitize_user_path_segment(user_id: str | None) -> str | None:
@@ -717,7 +730,7 @@ def sync_user_graph_to_runtime_storage(user_id: str | None) -> dict[str, int]:
         logger.warning("skip graph→runtime mirror: s3_bucket not configured")
         return {"uploaded": 0, "deleted": 0}
 
-    dest_prefix = f"{S3_FILES_SESSION_PREFIX}/{segment}/graph/"
+    dest_prefix = session_object_key(segment, "graph") + "/"
     local_files: dict[str, str] = {}
     for dirpath, dirnames, filenames in os.walk(graph_root):
         dirnames[:] = [d for d in dirnames if d not in _GRAPH_MIRROR_SKIP_DIR_NAMES]
@@ -806,9 +819,8 @@ def mirror_wiki_sync_status_to_runtime(user_id: str | None) -> bool:
         logger.warning("skip wiki sync status mirror: s3_bucket not configured")
         return False
 
-    key = (
-        f"{S3_FILES_SESSION_PREFIX}/{segment}/wiki/graphify-out/"
-        f"{WIKI_SYNC_STATUS_FILENAME}"
+    key = session_object_key(
+        segment, "wiki", "graphify-out", WIKI_SYNC_STATUS_FILENAME
     )
     with _without_env_proxies():
         s3 = boto3.client("s3", region_name=region)
@@ -851,7 +863,7 @@ def sync_user_wiki_to_runtime_storage(user_id: str | None) -> dict[str, int]:
         logger.warning("skip wiki→runtime mirror: s3_bucket not configured")
         return {"uploaded": 0, "deleted": 0}
 
-    dest_prefix = f"{S3_FILES_SESSION_PREFIX}/{segment}/wiki/"
+    dest_prefix = session_object_key(segment, "wiki") + "/"
     local_files: dict[str, str] = {}
     for dirpath, dirnames, filenames in os.walk(wiki_root):
         dirnames[:] = [d for d in dirnames if d not in _WIKI_MIRROR_SKIP_DIR_NAMES]
@@ -1145,7 +1157,7 @@ def _list_user_skill_names_from_s3(user_id: str | None) -> list[str]:
         # Fall back to local workspace mount when present (local/runtime).
         return _list_skill_dir_names(get_user_skills_dir(user_id))
 
-    prefix = f"{S3_FILES_SESSION_PREFIX}/{segment}/skills/"
+    prefix = session_object_key(segment, "skills") + "/"
     try:
         s3 = boto3.client("s3", region_name=region)
         paginator = s3.get_paginator("list_objects_v2")
@@ -1575,7 +1587,7 @@ def session_upload_s3_key(file_name: str, user_id: str | None = None) -> str:
     """Build ``agentcore-sessions/{user}/upload/{file}`` object key."""
     segment = _sanitize_s3_user_segment(user_id) or "default"
     safe_name = os.path.basename(file_name or "").strip() or "upload.bin"
-    return f"{S3_FILES_SESSION_PREFIX}/{segment}/upload/{safe_name}"
+    return session_object_key(segment, "upload", safe_name)
 
 
 def _session_upload_content_type(file_name: str) -> str:
@@ -1700,7 +1712,7 @@ def wiki_raw_upload_s3_key(file_name: str, user_id: str | None = None) -> str:
     """
     segment = _sanitize_s3_user_segment(user_id) or "default"
     safe_name = os.path.basename(file_name or "").strip() or "upload.bin"
-    return f"{S3_FILES_SESSION_PREFIX}/{segment}/wiki-upload/{safe_name}"
+    return session_object_key(segment, "wiki-upload", safe_name)
 
 
 def generate_wiki_raw_presigned_put(

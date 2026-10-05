@@ -157,36 +157,44 @@ def upload_to_s3_artifacts(file_bytes, file_name):
     import chat
 
     try:
-        s3_client = get_s3_client()
-
         content_type = utils.get_contents_type(file_name)
         logger.info(f"content_type: {content_type}")
 
-        from tools.workspace import sanitize_user_path_segment
+        from tools.workspace import get_user_artifacts_dir, sanitize_user_path_segment
+        from tools.s3_upload import workspace_mount_object_key
 
         user_seg = sanitize_user_path_segment(getattr(chat, "user_id", None)) or "default"
         safe_name = os.path.basename(file_name) or file_name
-        s3_key = f"artifacts/{user_seg}/{safe_name}"
+        s3_key = f"{user_seg}/artifacts/{safe_name}"
 
-        user_meta = {  # user-defined metadata
-            "content_type": content_type,
-            "model_name": chat.model_name,
-        }
+        artifacts_dir = get_user_artifacts_dir(getattr(chat, "user_id", None))
+        os.makedirs(artifacts_dir, exist_ok=True)
+        local_path = os.path.join(artifacts_dir, safe_name)
+        with open(local_path, "wb") as handle:
+            handle.write(file_bytes)
 
-        response = s3_client.put_object(
-            Bucket=chat.s3_bucket,
-            Key=s3_key,
-            ContentType=content_type,
-            Metadata=user_meta,
-            Body=file_bytes,
-        )
-        logger.info(f"upload response: {response}")
+        if workspace_mount_object_key(local_path):
+            logger.info("artifact written on workspace mount: %s", s3_key)
+        else:
+            s3_client = get_s3_client()
+            user_meta = {  # user-defined metadata
+                "content_type": content_type,
+                "model_name": chat.model_name,
+            }
+            response = s3_client.put_object(
+                Bucket=chat.s3_bucket,
+                Key=s3_key,
+                ContentType=content_type,
+                Metadata=user_meta,
+                Body=file_bytes,
+            )
+            logger.info(f"upload response: {response}")
 
         url = (
             chat.path
-            + "/artifacts/"
-            + parse.quote(user_seg)
             + "/"
+            + parse.quote(user_seg)
+            + "/artifacts/"
             + parse.quote(safe_name)
         )
         return url

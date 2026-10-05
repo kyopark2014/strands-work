@@ -70,7 +70,7 @@ SCHEDULE_LAMBDA_ROLE_NAME = f"role-lambda-schedule-for-{project_name}-{region}"
 SCHEDULER_INVOKE_ROLE_NAME = f"role-scheduler-invoke-for-{project_name}-{region}"
 SCHEDULE_GROUP_NAME = f"schedule-group-{project_name}"
 CLOUDFRONT_SIGNING_KEY_SECRET_NAME = f"{project_name}/cloudfront-signing-key"
-CLOUDFRONT_S3_SIGNED_PATHS = ("/images/*", "/docs/*", "/artifacts/*")
+CLOUDFRONT_S3_SIGNED_PATHS = ("/images/*", "/docs/*", "/artifacts/*", "/*/artifacts/*")
 # Prefer a project custom ResponseHeadersPolicy (security headers + strip origin Server).
 # Managed SecurityHeadersPolicy (67f7725c-…) does not remove Server: uvicorn.
 _cloudfront_response_headers_policy_id: Optional[str] = None
@@ -178,8 +178,12 @@ agentcore_control_client = boto3.client(
 s3files_client = boto3.client("s3files", region_name=region)
 cognito_idp_client = boto3.client("cognito-idp", region_name=region)
 
-S3_FILES_SESSION_PREFIX = "agentcore-sessions/"
-S3_FILES_APP_DATA_PREFIX = "app-data/"
+# Empty prefix = entire bucket (S3 Files root "/"). Do not pass "/" —
+# that scopes the file system to keys that literally start with "/".
+LEGACY_S3_FILES_SESSION_PREFIX = "agentcore-sessions/"
+LEGACY_S3_FILES_APP_DATA_PREFIX = "app-data/"
+S3_FILES_SESSION_PREFIX = ""
+S3_FILES_APP_DATA_PREFIX = ""
 APP_DATA_MOUNT_PATH = "/mnt/app-data"
 SESSION_STORAGE_MOUNT_PATH = "/mnt/workspace"
 COGNITO_ADMIN_USERNAME = "admin"
@@ -6075,18 +6079,13 @@ def create_cloudfront_distribution(
             "Compress": True
         },
         "CacheBehaviors": {
-            "Quantity": 3,
+            "Quantity": len(CLOUDFRONT_S3_SIGNED_PATHS),
             "Items": [
                 _cloudfront_s3_cache_behavior(
-                    "/images/*", f"s3-{project_name}", key_group_id
-                ),
-                _cloudfront_s3_cache_behavior(
-                    "/docs/*", f"s3-{project_name}", key_group_id
-                ),
-                _cloudfront_s3_cache_behavior(
-                    "/artifacts/*", f"s3-{project_name}", key_group_id
-                ),
-            ]
+                    path_pattern, f"s3-{project_name}", key_group_id
+                )
+                for path_pattern in CLOUDFRONT_S3_SIGNED_PATHS
+            ],
         },
         "Origins": {
             "Quantity": 2,
@@ -7517,7 +7516,7 @@ def deploy_ecs_service(
             ]
         )
         logger.info(
-            "  ECS will mount app-data S3 Files at %s (prefix=app-data/)",
+            "  ECS will mount app-data S3 Files at %s (prefix=/)",
             app_data_mount,
         )
 
@@ -8368,22 +8367,30 @@ def _find_s3files_file_system(
     prefix: str,
     name_tag: str,
 ) -> Optional[Dict[str, str]]:
-    """Return FS matching bucket+prefix or Name tag (never reuse a different prefix)."""
+    """Return the FS for this bucket and prefix. Never reuse a different prefix."""
     want_prefix = _normalize_s3files_prefix(prefix)
     paginator = s3files_client.get_paginator("list_file_systems")
+    prefix_matches: List[Dict[str, str]] = []
     for page in paginator.paginate():
         for item in page.get("fileSystems", []):
             if item.get("bucket") != s3_bucket_arn:
                 continue
             item_prefix = _normalize_s3files_prefix(item.get("prefix") or "")
-            item_name = _s3files_file_system_name_tag(item)
-            if item_prefix == want_prefix or item_name == name_tag:
-                return {
+            if item_prefix != want_prefix:
+                continue
+            prefix_matches.append(
+                {
                     "file_system_id": item.get("fileSystemId", ""),
                     "file_system_arn": item.get("fileSystemArn", ""),
                     "prefix": item_prefix,
+                    "name": _s3files_file_system_name_tag(item),
                 }
-    return None
+            )
+    for match in prefix_matches:
+        if name_tag and match.get("name") == name_tag:
+            return match
+    # Bucket root can have only one file system. Runtime and ECS share it.
+    return prefix_matches[0] if prefix_matches else None
 
 
 def _ensure_s3_bucket_versioning_enabled(s3_bucket_name: str) -> None:
@@ -8421,15 +8428,20 @@ def _get_or_create_s3files_file_system(
     _ensure_s3_bucket_versioning_enabled(bucket)
 
     normalized = _normalize_s3files_prefix(prefix)
-    response = s3files_client.create_file_system(
-        bucket=s3_bucket_arn,
-        prefix=normalized,
-        roleArn=role_arn,
-        acceptBucketWarning=True,
-        tags=[{"key": "Name", "value": name_tag}],
-    )
+    create_kwargs: Dict[str, object] = {
+        "bucket": s3_bucket_arn,
+        "roleArn": role_arn,
+        "acceptBucketWarning": True,
+        "tags": [{"key": "Name", "value": name_tag}],
+    }
+    if normalized:
+        create_kwargs["prefix"] = normalized
+    response = s3files_client.create_file_system(**create_kwargs)
     file_system_id = response["fileSystemId"]
-    logger.info(f"  Created S3 Files file system: {file_system_id} (prefix={normalized})")
+    logger.info(
+        f"  Created S3 Files file system: {file_system_id} "
+        f"(prefix={normalized or '/'})"
+    )
     _wait_for_s3files_status(
         s3files_client.get_file_system,
         "fileSystemId",
@@ -8874,7 +8886,7 @@ def create_s3_files_session_storage(
     logger.info(f"  File system: {file_system_id}")
     logger.info(f"  Access point: {access_point_arn}")
     logger.info(f"  Mount path: {SESSION_STORAGE_MOUNT_PATH}")
-    logger.info(f"  Prefix: {S3_FILES_SESSION_PREFIX}")
+    logger.info(f"  Prefix: {S3_FILES_SESSION_PREFIX or '/'}")
     logger.info(f"  Runtime subnets: {', '.join(private_subnets)}")
     logger.info(f"  Runtime security group: {agent_runtime_sg_id}")
 
@@ -8930,14 +8942,54 @@ def _delete_s3_prefix(bucket: str, prefix: str) -> int:
     return deleted
 
 
-def _migrate_app_data_from_sessions(s3_bucket_name: str) -> None:
-    """Copy ECS-owned data from agentcore-sessions/ into app-data/ (once).
+def _relocate_legacy_prefix_to_root(bucket: str, src_prefix: str) -> int:
+    """Copy {src_prefix}{path} to {path} when the destination key is missing."""
+    copied = 0
+    paginator = s3_client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=src_prefix):
+        for obj in page.get("Contents") or []:
+            src_key = obj.get("Key") or ""
+            if not src_key.startswith(src_prefix) or src_key.endswith("/"):
+                continue
+            dst_key = src_key[len(src_prefix) :]
+            if not dst_key:
+                continue
+            try:
+                s3_client.head_object(Bucket=bucket, Key=dst_key)
+                continue
+            except ClientError:
+                pass
+            s3_client.copy_object(
+                Bucket=bucket,
+                Key=dst_key,
+                CopySource={"Bucket": bucket, "Key": src_key},
+            )
+            copied += 1
+    return copied
 
-    Migrates application-database/, litellm/, per-user graph/, settings.json.
-    Skills/artifacts/checkpoints stay under agentcore-sessions.
-    After a successful copy of sensitive prefixes, remove the session originals
-    so Runtime NFS can no longer see tasks.db / virtual keys.
+
+def _migrate_app_data_from_sessions(s3_bucket_name: str) -> None:
+    """Copy ECS-owned data from the session prefix into the app-data prefix.
+
+    When both mounts are the bucket root, copy legacy prefixes onto the root
+    instead. Source and destination would otherwise be the same keys.
     """
+    if _normalize_s3files_prefix(S3_FILES_SESSION_PREFIX) == _normalize_s3files_prefix(
+        S3_FILES_APP_DATA_PREFIX
+    ):
+        try:
+            for legacy in (
+                LEGACY_S3_FILES_APP_DATA_PREFIX,
+                LEGACY_S3_FILES_SESSION_PREFIX,
+            ):
+                copied = _relocate_legacy_prefix_to_root(s3_bucket_name, legacy)
+                if copied:
+                    logger.info(
+                        f"  Copied {copied} object(s) from {legacy} to bucket root"
+                    )
+        except ClientError as e:
+            logger.warning(f"  legacy prefix relocate skipped: {e}")
+        return
     try:
         n = _copy_s3_prefix_if_missing(
             s3_bucket_name,
@@ -9204,7 +9256,7 @@ def create_s3_files_app_data_storage(
     logger.info(f"  File system: {file_system_id}")
     logger.info(f"  Access point: {access_point_arn}")
     logger.info(f"  Mount path: {APP_DATA_MOUNT_PATH}")
-    logger.info(f"  Prefix: {S3_FILES_APP_DATA_PREFIX}")
+    logger.info(f"  Prefix: {S3_FILES_APP_DATA_PREFIX or '/'}")
     return app_data_info
 
 
@@ -9666,7 +9718,7 @@ def main():
             logger.info(
                 f"  S3 Files (ECS app-data) Mount: "
                 f"{s3_files_app_data_info.get('mount_path')} "
-                f"(prefix=app-data/)"
+                f"(prefix=/)"
             )
         logger.info("")
         logger.info(f"Total deployment time: {elapsed_time/60:.2f} minutes")

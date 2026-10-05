@@ -43,27 +43,30 @@ def _safe_relative_path(file_path: str) -> str:
 
 
 def _normalize_artifact_rest(file_path: str, user_id: str) -> str:
-    """Return path under artifacts/{user}/ (filename or nested rest)."""
+    """Return the path under ``{user}/artifacts/`` (filename or nested rest)."""
     rest = _safe_relative_path(file_path)
     segment = utils.sanitize_user_path_segment(user_id)
     if not segment:
         raise HTTPException(status_code=400, detail="Invalid user session")
 
     parts = rest.split("/")
-    # artifacts/{user}/... → strip prefix
-    if len(parts) >= 2 and parts[0] == "artifacts":
-        if parts[1] != segment:
-            raise HTTPException(status_code=403, detail="Artifact access denied")
+    # {user}/artifacts/... → strip prefix
+    if len(parts) >= 3 and parts[0] == segment and parts[1] == "artifacts":
         rest = "/".join(parts[2:])
-        if not rest:
-            raise HTTPException(status_code=400, detail="File path is required")
-        return rest
+    # Legacy artifacts/{user}/... → strip prefix
+    elif len(parts) >= 2 and parts[0] == "artifacts" and parts[1] == segment:
+        rest = "/".join(parts[2:])
     # {user}/... → strip user
-    if parts[0] == segment:
+    elif parts[0] == segment:
         rest = "/".join(parts[1:])
-        if not rest:
-            raise HTTPException(status_code=400, detail="File path is required")
-        return rest
+    elif len(parts) >= 2 and parts[0] == "artifacts" and parts[1] != segment:
+        # artifacts/{other-user}/... is not this session.
+        # A single extra segment may be a legacy flat name (artifacts/file.md).
+        if len(parts) >= 3:
+            raise HTTPException(status_code=403, detail="Artifact access denied")
+        rest = parts[1]
+    if not rest:
+        raise HTTPException(status_code=400, detail="File path is required")
     return rest
 
 
@@ -74,11 +77,11 @@ def _s3_key_candidates(user_id: str, file_path: str) -> tuple[list[str], str]:
         raise HTTPException(status_code=400, detail="Invalid user session")
     rest = _normalize_artifact_rest(file_path, user_id)
     basename = os.path.basename(rest)
-    keys = [f"artifacts/{segment}/{rest}"]
-    # Legacy cde-pilot flat keys: artifacts/{filename}
-    flat = f"artifacts/{basename}"
-    if flat not in keys:
-        keys.append(flat)
+    keys = [f"{segment}/artifacts/{rest}"]
+    # Legacy copies: artifacts/{user}/... and flat artifacts/{filename}
+    for legacy in (f"artifacts/{segment}/{rest}", f"artifacts/{basename}"):
+        if legacy not in keys:
+            keys.append(legacy)
     return keys, basename
 
 

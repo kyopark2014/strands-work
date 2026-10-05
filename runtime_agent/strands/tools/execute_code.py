@@ -18,7 +18,7 @@ from strands import tool
 import utils
 import tools.workspace as workspace
 from tools.workspace import WORKING_DIR, REPO_ROOT, ARTIFACTS_REL
-from tools.s3_upload import build_s3_key
+from tools.s3_upload import build_s3_key, workspace_mount_object_key
 from tools.bash import _ensure_user_site_on_sys_path
 from urllib.parse import quote
 
@@ -81,7 +81,11 @@ def _touched_artifact_paths(before: dict, after: dict) -> list:
 
 
 def _upload_file_to_project_s3(rel_path: str, full_path: str) -> str:
-    """Upload an artifact file to the project S3 bucket; return the object key."""
+    """Return the ``{user}/artifacts/`` object key.
+
+    Files already on the workspace mount are that object. PutObject runs only
+    when the file is not on the mount, so CloudFront still has a single key.
+    """
     import boto3
 
     s3_bucket = utils.get_s3_bucket()
@@ -92,6 +96,11 @@ def _upload_file_to_project_s3(rel_path: str, full_path: str) -> str:
 
     content_type = utils.get_contents_type(full_path)
     key = build_s3_key(f"artifacts/{rel_path}", content_type=content_type)
+    mount_key = workspace_mount_object_key(full_path)
+    if mount_key:
+        logger.info("artifact already on workspace mount: %s", mount_key)
+        return mount_key
+
     region = utils.get_aws_region()
     s3 = boto3.client("s3", region_name=region)
     put_params = {"Bucket": s3_bucket, "Key": key}
@@ -105,7 +114,7 @@ def _upload_file_to_project_s3(rel_path: str, full_path: str) -> str:
 
 
 def _ensure_artifacts_uploaded(relative_paths: list) -> None:
-    """Push newly created artifact files to project S3 when sharing_url is set."""
+    """Publish artifact URLs. Skip PutObject when the workspace mount is the object."""
     sharing_url = utils.get_sharing_url()
     if not sharing_url or not utils.get_s3_bucket():
         return
@@ -123,15 +132,16 @@ def _ensure_artifacts_uploaded(relative_paths: list) -> None:
 def _paths_for_ui(relative_paths: list) -> list:
     """Return public URLs if sharing_url is set, otherwise absolute local paths.
 
-    When sharing_url is set, local artifacts are uploaded to the project S3
-    bucket first so CloudFront keys actually exist.
+    When sharing_url is set, the URL is ``{user}/artifacts/{relative}``. Files
+    on the workspace mount are already that object.
     """
     sharing_url = utils.get_sharing_url()
     if sharing_url:
         _ensure_artifacts_uploaded(relative_paths)
         out = []
         for rel in relative_paths:
-            key = build_s3_key(f"artifacts/{rel}")
+            full = os.path.abspath(os.path.join(workspace.ARTIFACTS_DIR, rel))
+            key = workspace_mount_object_key(full) or build_s3_key(f"artifacts/{rel}")
             out.append(f"{sharing_url}/{quote(key)}")
         return out
     return [os.path.abspath(os.path.join(workspace.ARTIFACTS_DIR, rel)) for rel in relative_paths]
