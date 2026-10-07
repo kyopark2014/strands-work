@@ -349,10 +349,12 @@ def get_chat(extended_thinking):
             "model_id": model_id,
             "client": boto3_bedrock,
             "max_tokens": maxOutputTokens,
-            "temperature": 0.1,
+
             "region_name": bedrock_region,
             "guardrail_config": guardrail_cfg,
         }
+        if not uses_adaptive_thinking(model_id):
+            converse_kwargs["temperature"] = 0.1
         if model_type == "claude":
             converse_kwargs["provider"] = "anthropic"
         converse_chat = ChatBedrockConverse(**converse_kwargs)
