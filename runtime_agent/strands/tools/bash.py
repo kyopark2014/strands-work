@@ -106,9 +106,11 @@ def bash(command: str) -> str:
     (e.g. node create_skills_doc.js, output.docx). Skill scripts must use
     $WORKING_DIR/skills/... (not a relative skills/ path).
     """
-    logger.info(f"###### bash: {command} ######")
     if not isinstance(command, str) or not command.strip():
         return "Error: empty command"
+    import unicode_paths
+    command = unicode_paths.rewrite_command_unicode_paths(command)
+    logger.info(f"###### bash: {command} ######")
 
     _ensure_cli_scripts_on_path()
     _ensure_user_site_on_sys_path()

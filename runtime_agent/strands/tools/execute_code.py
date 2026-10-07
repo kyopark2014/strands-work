@@ -288,6 +288,8 @@ def execute_code(code: str) -> str:
         _ensure_matplotlib_runtime()
         # Intentional sandboxed Python tool: cwd pinned to workspace.ARTIFACTS_DIR, I/O
         # captured, size/null validated above. Not for untrusted multi-tenant use.
+        import unicode_paths
+        code = unicode_paths.rewrite_command_unicode_paths(code)
         exec(code, _exec_globals)  # nosec B102  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
 
         sys.stdout, sys.stderr = old_stdout, old_stderr

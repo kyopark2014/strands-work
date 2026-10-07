@@ -4,6 +4,7 @@ import json
 import traceback
 import boto3
 import os
+import unicodedata
 from contextlib import contextmanager
 from urllib import parse
 from botocore.config import Config
@@ -16,6 +17,35 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("utils")
+
+def _load_unicode_paths():
+    """Import the app-local Hangul path helper in either layout."""
+    try:
+        from application import unicode_paths
+    except ImportError:
+        import unicode_paths
+    return unicode_paths
+
+
+
+def nfc_text(value: str | None) -> str:
+    """Compose Hangul so an NFD upload and an NFC lookup share one spelling."""
+    return unicodedata.normalize("NFC", value or "")
+
+
+def nfc_filename(filename: str | None, *, default: str = "") -> str:
+    """Return a basename in NFC.
+
+    macOS file pickers send decomposed Hangul (NFD). Linux paths and the
+    agent look up composed Hangul (NFC), so store and address one spelling.
+    """
+    name = nfc_text(os.path.basename(filename or "").strip())
+    name = name.replace("\x00", "")
+    if name in {".", ".."}:
+        return default
+    return name or default
+
+
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 config_path = os.path.join(script_dir, "config.json")
@@ -1586,7 +1616,7 @@ def _s3_client_for_presign():
 def session_upload_s3_key(file_name: str, user_id: str | None = None) -> str:
     """Build ``agentcore-sessions/{user}/upload/{file}`` object key."""
     segment = _sanitize_s3_user_segment(user_id) or "default"
-    safe_name = os.path.basename(file_name or "").strip() or "upload.bin"
+    safe_name = nfc_filename(file_name, default="upload.bin")
     return session_object_key(segment, "upload", safe_name)
 
 
@@ -1781,20 +1811,29 @@ def download_s3_object_to_path(s3_key: str, dest_path: str) -> int:
 
 
 def head_session_upload_object(s3_key: str) -> dict | None:
-    """HEAD an object; return ``{content_length, content_type}`` or None."""
+    """HEAD an object; return ``{content_length, content_type}`` or None.
+
+    Tries the NFC and NFD spellings so a Mac-placed object is found from an
+    NFC key.
+    """
     if not s3_bucket or not s3_key:
         return None
-    try:
-        with _without_env_proxies():
-            s3_client = _s3_client_for_presign()
-            response = s3_client.head_object(Bucket=s3_bucket, Key=s3_key)
-        return {
-            "content_length": int(response.get("ContentLength") or 0),
-            "content_type": response.get("ContentType"),
-        }
-    except Exception:
-        logger.error("Error head_object key=%s: %s", s3_key, traceback.format_exc())
-        return None
+    unicode_paths = _load_unicode_paths()
+    keys = unicode_paths.path_spellings(s3_key)
+    last_error = ""
+    for key in keys:
+        try:
+            with _without_env_proxies():
+                s3_client = _s3_client_for_presign()
+                response = s3_client.head_object(Bucket=s3_bucket, Key=key)
+            return {
+                "content_length": int(response.get("ContentLength") or 0),
+                "content_type": response.get("ContentType"),
+            }
+        except Exception:
+            last_error = traceback.format_exc()
+    logger.error("Error head_object keys=%s: %s", keys, last_error)
+    return None
 
 
 def wait_for_workspace_file(
@@ -1823,22 +1862,27 @@ def wait_for_workspace_file(
         )
         return False
 
+    unicode_paths = _load_unicode_paths()
+    candidates = unicode_paths.path_spellings(path) or [path]
     deadline = time.monotonic() + max(0.0, timeout_sec)
     last_size: int | None = None
     while True:
-        try:
-            if os.path.isfile(path):
-                size = os.path.getsize(path)
+        for cand in candidates:
+            try:
+                found = unicode_paths.resolve_existing_path(cand)
+                if not os.path.isfile(found):
+                    continue
+                size = os.path.getsize(found)
                 last_size = size
                 if expected_size is None or size == expected_size:
                     logger.info(
                         "workspace file ready: %s (%s bytes)",
-                        path,
+                        found,
                         size,
                     )
                     return True
-        except OSError:
-            pass
+            except OSError:
+                pass
 
         if time.monotonic() >= deadline:
             logger.warning(
