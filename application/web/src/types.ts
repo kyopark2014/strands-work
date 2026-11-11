@@ -46,6 +46,9 @@ export interface AppConfig {
   default_model?: string;
   default_skills?: string[];
   default_mcp_servers?: string[];
+  /** Per-user Settings defaults (shared across all tasks). */
+  default_guardrail_enabled?: boolean;
+  default_memory_enabled?: boolean;
   default_strands_tools?: string[];
 }
 

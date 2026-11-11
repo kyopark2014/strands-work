@@ -25,28 +25,22 @@ export function titleFromPrompt(prompt: string): string {
 
 export function buildNewTaskDefaults(
   config: AppConfig,
-  activeTask: Task | null,
+  activeTask: Task | null = null,
 ): CreateTaskDefaults {
-  // Skill/MCP defaults come from per-user settings.json via /api/config
-  // (default_skills / default_mcp_servers), not from the active task.
-  return {
-    model_name: activeTask?.model_name ?? config.default_model,
-    skills: config.default_skills ?? [],
-    mcp_servers: config.default_mcp_servers ?? [],
-    strands_tools: activeTask?.strands_tools ?? config.default_strands_tools ?? [],
-    guardrail_enabled: activeTask?.guardrail_enabled ?? false,
-    memory_enabled: activeTask?.memory_enabled ?? true,
-  };
-}
-
-export function buildFallbackTaskDefaults(config: AppConfig): CreateTaskDefaults {
+  // Model / Guardrail / Memory / Skill / MCP all come from per-user
+  // settings.json via /api/config — not from the active task.
   return {
     model_name: config.default_model,
     skills: config.default_skills ?? [],
     mcp_servers: config.default_mcp_servers ?? [],
-    strands_tools: config.default_strands_tools ?? [],
-    memory_enabled: true,
+    strands_tools: activeTask?.strands_tools ?? config.default_strands_tools ?? [],
+    guardrail_enabled: config.default_guardrail_enabled ?? false,
+    memory_enabled: config.default_memory_enabled ?? true,
   };
+}
+
+export function buildFallbackTaskDefaults(config: AppConfig): CreateTaskDefaults {
+  return buildNewTaskDefaults(config);
 }
 
 export function applyTaskTitleFromPrompt(
