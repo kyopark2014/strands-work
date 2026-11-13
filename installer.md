@@ -58,7 +58,7 @@ region = "us-west-2"               # AWS 리전
 git_name = "strands-runtime"       # Git 저장소 이름 (레거시 EC2 SSM 배포용)
 
 # AgentCore Web Search Gateway
-AGENTCORE_GATEWAY_REGION = "us-east-1"
+AGENTCORE_GATEWAY_REGION = "us-west-2"
 AGENTCORE_WEBSEARCH_GATEWAY_NAME = "gateway-websearch"
 AGENTCORE_WEBSEARCH_TARGET_NAME = "websearch"
 
@@ -166,7 +166,7 @@ Bedrock 서비스가 역할을 assume할 수 있도록 AWS 권장 형식을 사�
 > `create_opensearch_collection()` 함수는 이전 버전 호환을 위해 코드에 남아 있으나, 현재 배포 흐름에서는 사용하지 않습니다.
 
 ### 5. AgentCore Web Search Gateway
-- **리전**: `us-east-1` (`AGENTCORE_GATEWAY_REGION`)
+- **리전**: `us-west-2` (`AGENTCORE_GATEWAY_REGION`)
 - **게이트웨이 이름**: `gateway-websearch`
 - **타겟 이름**: `websearch`
 - **역할**: `role-agentcore-gateway-websearch-for-{project_name}`
@@ -410,7 +410,7 @@ python installer.py --verify-deployment
        ↓
 [2/10] IAM 역할 생성
        • Knowledge Base / Agent / ECS Task·Execution
-       • AgentCore Web Search gateway 역할·gateway (us-east-1)
+       • AgentCore Web Search gateway 역할·gateway (us-west-2)
        ↓
 [4/10] S3 Vectors 스토어 생성
        ↓

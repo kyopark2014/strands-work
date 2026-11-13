@@ -17,7 +17,7 @@ from botocore.exceptions import ClientError
 # Configuration
 project_name = "strands-runtime"
 region = "us-west-2"
-AGENTCORE_GATEWAY_REGION = "us-east-1"
+AGENTCORE_GATEWAY_REGION = "us-west-2"
 AGENTCORE_WEBSEARCH_GATEWAY_NAME = "gateway-websearch"
 
 
