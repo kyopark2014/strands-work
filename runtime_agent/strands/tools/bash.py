@@ -11,6 +11,7 @@ Threat model / shell=True rationale:
 import logging
 import os
 import subprocess
+import sys
 
 from strands import tool
 

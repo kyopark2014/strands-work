@@ -479,58 +479,74 @@ def delete_iam_role(config):
         print(f"Role deletion failed: {e}")
         return False
 
-def delete_iam_policy(config):
-    """Delete IAM policy and all versions"""
-    accountId = config.get('accountId')
-    projectName = config.get('projectName', 'agentcore')
-    policy_name = f"AmazonBedrockAgentCoreRuntimePolicyFor{projectName}"
-    policy_arn = f"arn:aws:iam::{accountId}:policy/{policy_name}"
-    
+def _delete_one_iam_policy(iam_client, account_id: str, policy_name: str) -> bool:
+    """Delete one customer managed policy and all of its versions."""
+    policy_arn = f"arn:aws:iam::{account_id}:policy/{policy_name}"
     try:
-        iam_client = boto3.client('iam')
-        
-        # Check if policy exists
         try:
-            existing_policy = iam_client.get_policy(PolicyArn=policy_arn)
-            
-            # List all policy versions
-            versions_response = iam_client.list_policy_versions(PolicyArn=policy_arn)
-            versions = versions_response['Versions']
-            
-            # Delete all non-default versions first
-            for version in versions:
-                if not version['IsDefaultVersion']:
-                    try:
-                        iam_client.delete_policy_version(
-                            PolicyArn=policy_arn,
-                            VersionId=version['VersionId']
-                        )
-                        print(f"✓ Deleted policy version: {version['VersionId']}")
-                    except Exception as e:
-                        print(f"Warning: Failed to delete policy version {version['VersionId']}: {e}")
-            
-            # Delete default version (must be last)
-            if versions:
-                default_version = next((v for v in versions if v['IsDefaultVersion']), None)
-                if default_version:
-                    try:
-                        iam_client.delete_policy_version(
-                            PolicyArn=policy_arn,
-                            VersionId=default_version['VersionId']
-                        )
-                        print(f"✓ Deleted default policy version: {default_version['VersionId']}")
-                    except Exception as e:
-                        print(f"Warning: Failed to delete default policy version: {e}")
-            
-            # Delete policy
-            iam_client.delete_policy(PolicyArn=policy_arn)
-            print(f"✓ IAM policy deleted: {policy_arn}")
-            return True
-            
+            iam_client.get_policy(PolicyArn=policy_arn)
         except iam_client.exceptions.NoSuchEntityException:
             print(f"IAM policy {policy_name} not found (may already be deleted)")
             return True
-            
+
+        versions_response = iam_client.list_policy_versions(PolicyArn=policy_arn)
+        versions = versions_response["Versions"]
+
+        for version in versions:
+            if not version["IsDefaultVersion"]:
+                try:
+                    iam_client.delete_policy_version(
+                        PolicyArn=policy_arn,
+                        VersionId=version["VersionId"],
+                    )
+                    print(f"✓ Deleted policy version: {version['VersionId']}")
+                except Exception as e:
+                    print(
+                        f"Warning: Failed to delete policy version "
+                        f"{version['VersionId']}: {e}"
+                    )
+
+        if versions:
+            default_version = next(
+                (v for v in versions if v["IsDefaultVersion"]), None
+            )
+            if default_version:
+                try:
+                    iam_client.delete_policy_version(
+                        PolicyArn=policy_arn,
+                        VersionId=default_version["VersionId"],
+                    )
+                    print(
+                        f"✓ Deleted default policy version: "
+                        f"{default_version['VersionId']}"
+                    )
+                except Exception as e:
+                    print(f"Warning: Failed to delete default policy version: {e}")
+
+        iam_client.delete_policy(PolicyArn=policy_arn)
+        print(f"✓ IAM policy deleted: {policy_arn}")
+        return True
+    except Exception as e:
+        print(f"Policy deletion failed for {policy_name}: {e}")
+        return False
+
+
+def delete_iam_policy(config):
+    """Delete IAM policies (core + storage split) and all versions."""
+    accountId = config.get('accountId')
+    projectName = config.get('projectName', 'agentcore')
+    policy_names = [
+        f"AmazonBedrockAgentCoreRuntimePolicyFor{projectName}",
+        f"AmazonBedrockAgentCoreRuntimeStorageFor{projectName}",
+    ]
+
+    try:
+        iam_client = boto3.client('iam')
+        ok = True
+        for policy_name in policy_names:
+            if not _delete_one_iam_policy(iam_client, accountId, policy_name):
+                ok = False
+        return ok
     except Exception as e:
         print(f"Policy deletion failed: {e}")
         return False
@@ -556,8 +572,8 @@ def delete_iam_resources():
         if not delete_iam_role(config):
             print("Warning: Failed to delete IAM role")
         
-        # Delete policy
-        print("\n2. Deleting IAM policy...")
+        # Delete core + storage policies
+        print("\n2. Deleting IAM policies...")
         if not delete_iam_policy(config):
             print("Warning: Failed to delete IAM policy")
         

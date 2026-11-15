@@ -155,13 +155,20 @@ def is_app_only_strands_tool(tool: Any) -> bool:
 
 
 # Local stdio MCP Apps whose UI HTML ships with the runtime (no resources/read on
-# Strands MCPClient). Keyed by mcp_config server name.
-_LOCAL_STDIO_APP_SERVERS = frozenset({"korea-weather"})
+# Strands MCPClient). Includes UI/mcp.list aliases ("korea_weather", "weather") and
+# the mcpServers key ("korea-weather") from mcp_config.load_config().
+_LOCAL_STDIO_APP_ALIASES: dict[str, str] = {
+    "korea-weather": "korea-weather",
+    "korea_weather": "korea-weather",
+    "weather": "korea-weather",
+}
+_LOCAL_STDIO_APP_SERVERS = frozenset(_LOCAL_STDIO_APP_ALIASES)
 
 
 def _local_stdio_app_ui(server_name: str) -> tuple[str, str, dict[str, Any]] | None:
     """Return ``(view_uri, html, csp)`` for a local stdio MCP Apps server."""
-    if server_name == "korea-weather":
+    canonical = _LOCAL_STDIO_APP_ALIASES.get(server_name)
+    if canonical == "korea-weather":
         try:
             from mcp_server_korea_weather import VIEW_URI, WEATHER_HTML
         except ImportError as exc:
@@ -311,8 +318,18 @@ def normalize_tool_result_text(content: Any) -> str:
         for block in content:
             if isinstance(block, str):
                 texts.append(block)
-            elif isinstance(block, dict) and block.get("type") == "text":
-                texts.append(str(block.get("text", "")))
+            elif isinstance(block, dict):
+                # Bedrock/Strands blocks are often {"text": "..."} without type=text.
+                text = block.get("text")
+                if isinstance(text, str) and block.get("type", "text") == "text":
+                    texts.append(text)
+                else:
+                    import json
+
+                    try:
+                        texts.append(json.dumps(block, ensure_ascii=False))
+                    except Exception:
+                        texts.append(str(block))
             elif hasattr(block, "text"):
                 texts.append(str(getattr(block, "text") or ""))
             else:

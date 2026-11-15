@@ -49,14 +49,17 @@ def _s3_connect_src_hosts() -> str:
     return " ".join(hosts)
 
 
-# MCP Apps UIs (srcdoc iframes inherit this CSP). Excalidraw loads from esm.sh.
+# MCP Apps UIs (srcdoc iframes inherit this CSP). Excalidraw loads from esm.sh
+# and may spawn blob: workers / fetch blob: URLs; parent CSP must allow those
+# because srcdoc meta CSP can only further restrict the host policy.
 _MCP_APPS_STATIC_HOSTS = "https://esm.sh"
-_MCP_APPS_CONNECT_HOSTS = "https://esm.sh"
+_MCP_APPS_CONNECT_HOSTS = "https://esm.sh blob:"
 
 # frame-src includes 'self' so Knowledge/Wiki Graph modals can iframe HTML
 # (without 'self' the graph iframe is blank).
 # connect-src includes S3 so Load-files / Wiki / RAG can PUT directly to presigned URLs.
 # script-src needs 'unsafe-inline' so MCP Apps srcdoc widgets can run.
+# worker-src blob: is required for Excalidraw (and similar) canvas workers.
 _CONTENT_SECURITY_POLICY = (
     "default-src 'self'; "
     f"script-src 'self' 'unsafe-inline' {_MCP_APPS_STATIC_HOSTS}; "
@@ -64,6 +67,7 @@ _CONTENT_SECURITY_POLICY = (
     "img-src 'self' data: blob: https:; "
     f"font-src 'self' data: {_MCP_APPS_STATIC_HOSTS}; "
     f"connect-src 'self' {_s3_connect_src_hosts()} {_MCP_APPS_CONNECT_HOSTS}; "
+    f"worker-src 'self' blob: {_MCP_APPS_STATIC_HOSTS}; "
     "frame-src 'self'; "
     "frame-ancestors 'none'; "
     "base-uri 'self'; "

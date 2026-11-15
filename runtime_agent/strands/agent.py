@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import sys
@@ -326,8 +327,16 @@ async def _run_agent_strands(payload):
 
                     if tool_use_id:
                         tool_names[tool_use_id] = name
-                        if isinstance(input_val, dict):
-                            tool_inputs[tool_use_id] = input_val
+                        # Strands streams tool input as a growing JSON string; only
+                        # remember a parsed dict (needed for MCP Apps tool-input).
+                        parsed_input = input_val
+                        if isinstance(input_val, str) and input_val.strip():
+                            try:
+                                parsed_input = json.loads(input_val)
+                            except json.JSONDecodeError:
+                                parsed_input = None
+                        if isinstance(parsed_input, dict):
+                            tool_inputs[tool_use_id] = parsed_input
                     payload = {
                         "tool": name,
                         "input": input_val,
@@ -342,12 +351,32 @@ async def _run_agent_strands(payload):
 
                     msg_content = message.get("content", [])
                     for item in msg_content:
+                        # Assistant toolUse carries the final args as a dict — more
+                        # reliable than streaming current_tool_use JSON fragments.
+                        tool_use = item.get("toolUse") if isinstance(item, dict) else None
+                        if isinstance(tool_use, dict):
+                            tid = tool_use.get("toolUseId") or ""
+                            tname = tool_use.get("name") or ""
+                            tinput = tool_use.get("input")
+                            if tid and tname:
+                                tool_names[tid] = tname
+                            if tid and isinstance(tinput, dict):
+                                tool_inputs[tid] = tinput
+                            continue
+
                         if "toolResult" not in item:
                             continue
                         tool_result = item["toolResult"]
                         tool_use_id = tool_result["toolUseId"]
                         tool_content = tool_result["content"]
-                        tool_result_text = tool_content[0].get("text", "") if tool_content else ""
+                        tool_result_text = (
+                            mcp_apps_host.normalize_tool_result_text(tool_content)
+                            or (
+                                tool_content[0].get("text", "")
+                                if tool_content and isinstance(tool_content[0], dict)
+                                else ""
+                            )
+                        )
                         tool_name = tool_names.get(tool_use_id, "")
                         # Full text stays in the model transcript; truncate for logs/SSE
                         # so huge HTML (e.g. get_raw_text) cannot block stdout or flood UI.
@@ -359,12 +388,16 @@ async def _run_agent_strands(payload):
                         # MCP Apps: attach the ui:// reference (and tool I/O) when this
                         # tool has a UI. Keep the app payload outside the truncated text.
                         app_tool_input = tool_inputs.get(tool_use_id)
+                        if not isinstance(app_tool_input, dict):
+                            app_tool_input = None
+                        structured = tool_result.get("structuredContent")
+                        if structured is None:
+                            structured = tool_result.get("structured_content")
                         mcp_app = mcp_apps_host.build_app_payload(
                             tool_name,
-                            mcp_apps_host.normalize_tool_result_text(tool_content)
-                            or tool_result_text,
-                            None,
-                            app_tool_input if isinstance(app_tool_input, dict) else None,
+                            tool_result_text,
+                            structured,
+                            app_tool_input,
                         )
 
                         tool_result_payload = {

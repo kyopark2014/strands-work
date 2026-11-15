@@ -2405,8 +2405,8 @@ def _wait_for_s3files_resource_deleted(
     return False
 
 
-def _find_s3files_fs_ids_for_bucket(s3_bucket_arn: str) -> List[str]:
-    ids: List[str] = []
+def _find_s3files_fs_ids_for_bucket(s3_bucket_arn: str) -> list[str]:
+    ids: list[str] = []
     paginator = s3files_client.get_paginator("list_file_systems")
     for page in paginator.paginate():
         for item in page.get("fileSystems", []):
@@ -2418,10 +2418,10 @@ def _find_s3files_fs_ids_for_bucket(s3_bucket_arn: str) -> List[str]:
     return ids
 
 
-def _resolve_s3files_file_system_ids() -> List[str]:
+def _resolve_s3files_file_system_ids() -> list[str]:
     """Return session + app-data FS ids (config first, then all FS on project bucket)."""
     app_config = _load_application_config()
-    ids: List[str] = []
+    ids: list[str] = []
     for key in (
         "s3_files_file_system_id",
         "s3_files_app_data_file_system_id",

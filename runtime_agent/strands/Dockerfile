@@ -27,7 +27,9 @@ RUN pip install --upgrade "setuptools>=83.0.0" \
  && pip install "urllib3>=2.7.0" boto3 botocore --upgrade
 # MCP 2.x MCPServer (mcp.server.mcpserver).
 RUN pip install "mcp>=2.1.1"
-RUN pip install "strands-agents[openai,otel] @ git+https://github.com/strands-agents/sdk-python.git@main#subdirectory=strands-py" "strands-agents-tools>=0.8.1"
+# Cap <0.9: v0.9.0 removed strands_tools.file_read/file_write (breaks tools/* wrappers).
+RUN pip install "strands-agents[openai,otel] @ git+https://github.com/strands-agents/sdk-python.git@main#subdirectory=strands-py" \
+    "strands-agents-tools>=0.8.1,<0.9.0"
 # CVE-2026-16796 fixed in bedrock-agentcore>=1.18.1
 RUN pip install "bedrock-agentcore>=1.18.1" uv
 RUN pip install "mcp>=2.1.1"
