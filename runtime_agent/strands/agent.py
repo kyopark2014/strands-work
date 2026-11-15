@@ -12,6 +12,7 @@ import httpx
 import boto3
 import utils
 import strands_agent
+import mcp_apps_host
 
 from datetime import datetime, timezone
 from urllib.parse import urlparse
@@ -121,7 +122,13 @@ async def agent_strands(payload):
 
 async def _run_agent_strands(payload):
     """Run one Strands agent turn: configure, stream the agent, and yield events."""
-    logger.info(f"payload: {payload}")
+    try:
+        _payload_log = dict(payload) if isinstance(payload, dict) else {}
+        if _payload_log.get("notion_access_token"):
+            _payload_log["notion_access_token"] = "***"
+        logger.info(f"payload: {_payload_log}")
+    except Exception:
+        logger.info("payload: (received)")
 
     query = payload.get("prompt")
     mcp_servers = payload.get("mcp_servers", [])
@@ -175,6 +182,7 @@ async def _run_agent_strands(payload):
         skillMode=skill_mode,
         guardrailEnabled=payload.get("guardrail_enabled"),
         memoryEnabled=payload.get("memory_enabled"),
+        notionAccessToken=payload.get("notion_access_token"),
     )
     logger.info(f"guardrail_enabled: {chat.guardrail_enabled}")
     logger.info(f"memory_enabled: {chat.memory_enabled}")
@@ -199,6 +207,7 @@ async def _run_agent_strands(payload):
         or strands_agent.selected_guardrail_enabled != chat.guardrail_enabled
         or strands_agent.selected_model_name != chat.model_name
         or strands_agent.selected_user_id != chat.user_id
+        or strands_agent.notion_auth_changed(mcp_servers)
         or strands_agent.agent is None
     )
     if needs_agent:
@@ -210,6 +219,7 @@ async def _run_agent_strands(payload):
         strands_agent.selected_guardrail_enabled = chat.guardrail_enabled
         strands_agent.selected_model_name = chat.model_name
         strands_agent.selected_user_id = chat.user_id
+        strands_agent.remember_notion_auth(mcp_servers)
 
         strands_agent.mcp_manager.stop_agent_clients()
         strands_agent.agent = strands_agent.create_agent(
@@ -346,6 +356,17 @@ async def _run_agent_strands(payload):
                             f"[toolUseId] {tool_use_id}, len={len(tool_result_text)}"
                         )
 
+                        # MCP Apps: attach the ui:// reference (and tool I/O) when this
+                        # tool has a UI. Keep the app payload outside the truncated text.
+                        app_tool_input = tool_inputs.get(tool_use_id)
+                        mcp_app = mcp_apps_host.build_app_payload(
+                            tool_name,
+                            mcp_apps_host.normalize_tool_result_text(tool_content)
+                            or tool_result_text,
+                            None,
+                            app_tool_input if isinstance(app_tool_input, dict) else None,
+                        )
+
                         tool_result_payload = {
                             "toolResult": utils.truncate_for_stream(tool_result_text),
                             "toolUseId": tool_use_id,
@@ -356,6 +377,10 @@ async def _run_agent_strands(payload):
                                 tool_name, tool_inputs.get(tool_use_id)
                             )
                         )
+                        if mcp_app:
+                            if not tool_result_payload.get("mcpServer") and mcp_app.get("mcpServer"):
+                                tool_result_payload["mcpServer"] = mcp_app["mcpServer"]
+                            tool_result_payload["mcpApp"] = mcp_app
                         yield tool_result_payload
 
                         _, urls, _ = chat.get_tool_info(tool_name, tool_result_text)

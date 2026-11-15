@@ -52,6 +52,7 @@ class QueueNotificationSink:
         *,
         mcp_server: str | None = None,
         skill_name: str | None = None,
+        mcp_app: dict | None = None,
     ):
         self._streaming_slot = None
         if tool_use_id not in self._tool_slots:
@@ -65,6 +66,8 @@ class QueueNotificationSink:
             payload["mcpServer"] = mcp_server
         if skill_name:
             payload["skillName"] = skill_name
+        if mcp_app:
+            payload["mcpApp"] = mcp_app
         self._message_queue.put(payload)
 
     def register_tool(self, tool_use_id: str, name: str):

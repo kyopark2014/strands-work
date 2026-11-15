@@ -27,10 +27,15 @@ RUN pip install --upgrade "setuptools>=83.0.0" \
     "openai>=2.41.0" \
     aws-bedrock-token-generator \
     requests \
-    "markdown>=3.7"
+    "markdown>=3.7" \
+    "mcp>=2.1.1"
 
 COPY . .
 COPY --from=frontend /web/dist /app/application/web/dist
+
+# Notion MCP App viewer (self-contained HTML). Rebuild so the image works even
+# if dist/ was missing from the build context.
+RUN python3 /app/application/mcp_app_views/build.py
 
 # Knowledge-graph + Wiki sync deps (import name: graphify ← PyPI graphifyy)
 RUN pip install --no-cache-dir -r /app/graph/requirements.txt

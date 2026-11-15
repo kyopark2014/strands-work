@@ -5,6 +5,7 @@ trade info
 websearch
 web_fetch
 image generation
+korea_weather
 memory
 graph memory
 wiki
@@ -12,3 +13,5 @@ pubmed
 chembl
 clinicaltrial
 arxiv-manual
+notion-remote
+excalidraw

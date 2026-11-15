@@ -106,6 +106,16 @@ def get_application_config(user_id: str | None = None) -> dict[str, Any]:
         logger.info("No initial MCP defaults matched current capability list")
     if not default_strands_tools:
         default_strands_tools = DEFAULT_STRANDS_TOOLS
+    notion_status = {"connected": False, "fresh": False}
+    if user_id:
+        try:
+            try:
+                from application import notion_auth
+            except ImportError:
+                import notion_auth
+            notion_status = notion_auth.status_for_user(user_id)
+        except Exception:
+            logger.exception("Failed to load Notion status for config")
     # Per-user Settings (model / Guardrail / Memory) shared by all tasks.
     flags = utils.get_user_task_feature_flags(user_id)
     default_model = utils.get_user_preferred_model(user_id) or DEFAULT_MODEL
@@ -113,6 +123,8 @@ def get_application_config(user_id: str | None = None) -> dict[str, Any]:
         default_model = DEFAULT_MODEL
     return {
         **get_public_config(),
+        "notion_connected": bool(notion_status.get("connected")),
+        "notion_fresh": bool(notion_status.get("fresh")),
         "skills": skill_options,
         "mcp_servers": mcp_options,
         "strands_tools": STRANDS_TOOLS,

@@ -14,6 +14,7 @@ import sys
 from typing import Optional
 
 import chat
+import mcp_apps_host
 import utils
 from bedrock_agentcore.runtime.context import BedrockAgentCoreContext
 from strands import Agent, AgentSkills, Skill
@@ -279,6 +280,7 @@ def update_tools(strands_tools: list, mcp_servers: list):
     global mcp_tool_servers
     # Reset server mapping whenever tools are rebuilt.
     mcp_tool_servers = {}
+    mcp_apps_host.clear()
 
     # builtin tools
     tools = get_builtin_tools()
@@ -339,8 +341,33 @@ def update_tools(strands_tools: list, mcp_servers: list):
                         if not mcp_servers_list:
                             logger.warning(f"No tools returned from {mcp_tool}")
                         else:
+                            # MCP Apps: remember ui:// resources the server's tools declare,
+                            # and hide app-only tools from the model.
+                            try:
+                                n_apps = mcp_apps_host.cache_apps_from_strands_tools(
+                                    mcp_servers_list, server_name=mcp_tool
+                                )
+                                if n_apps:
+                                    logger.info(
+                                        f"Cached {n_apps} MCP App UI mapping(s) from {mcp_tool}"
+                                    )
+                            except Exception as app_exc:
+                                logger.warning(
+                                    f"MCP Apps cache skipped for {mcp_tool}: {app_exc}"
+                                )
+                            hidden = [
+                                t.tool_name
+                                for t in mcp_servers_list
+                                if mcp_apps_host.is_app_only_strands_tool(t)
+                            ]
+                            if hidden:
+                                logger.info(
+                                    f"app-only tools hidden from the model ({mcp_tool}): {hidden}"
+                                )
                             for mcp_server_item in mcp_servers_list:
                                 name = mcp_server_item.tool_name
+                                if name in hidden:
+                                    continue
                                 if name in known_names:
                                     logger.info(f"{name} already in tools")
                                     continue
@@ -361,6 +388,15 @@ def update_tools(strands_tools: list, mcp_servers: list):
             logger.error(f"Exception type: {type(exc)}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
+
+    if "notion-remote" in mcp_servers and not mcp_manager.is_client_failed("notion-remote"):
+        try:
+            import notion_app
+
+            n_notion_apps = notion_app.register_notion_apps()
+            logger.info(f"Registered {n_notion_apps} Notion viewer app(s)")
+        except Exception as notion_app_exc:
+            logger.warning(f"Notion viewer apps skipped: {notion_app_exc}")
 
     return tools
 
@@ -401,6 +437,14 @@ def append_tool_guidance_to_prompt(system_prompt: str, mcp_servers: list) -> str
     if selected & {"aws documentation", "aws document"}:
         extras.append(
             "aws와 관련된 내용이 있다면, search_documentation tool을 이용해 필요한 정보를 수집하세요."
+        )
+
+    if selected & {"notion-remote", "notion remote", "notion_remote"}:
+        extras.append(
+            "Notion 작업은 notion-remote MCP 도구를 사용하세요. "
+            "notion-search / notion-fetch / notion-list-*-pages 결과는 채팅에 목록·페이지 UI로 "
+            "표시되므로, 같은 내용을 텍스트로 길게 반복하지 말고 핵심만 요약하세요. "
+            "검색어 입력이나 수정 요청은 사용자의 채팅 메시지로 받습니다."
         )
 
     if not extras:
@@ -467,6 +511,32 @@ selected_session_id = None
 selected_guardrail_enabled = None
 selected_model_name = None
 selected_user_id = None
+selected_notion_authed = False
+
+
+def _notion_requested(mcp_servers) -> bool:
+    names = {str(s).strip().lower() for s in (mcp_servers or []) if str(s).strip()}
+    return bool(names & {"notion-remote", "notion remote", "notion_remote"})
+
+
+def _notion_authed() -> bool:
+    return bool(
+        (
+            getattr(chat, "notion_access_token", None)
+            or os.environ.get("NOTION_REMOTE_ACCESS_TOKEN")
+            or ""
+        ).strip()
+    )
+
+
+def notion_auth_changed(mcp_servers) -> bool:
+    """True when Notion is requested and its token presence changed since the agent was built."""
+    return _notion_requested(mcp_servers) and selected_notion_authed != _notion_authed()
+
+
+def remember_notion_auth(mcp_servers) -> None:
+    global selected_notion_authed
+    selected_notion_authed = _notion_authed() if _notion_requested(mcp_servers) else False
 agent = None
 
 # OpenAI/Mantle reasoning and unsigned thinking cannot be replayed to Claude/Nova.

@@ -101,6 +101,7 @@ class MCPClientManager:
         url: str,
         headers: dict[str, str] = {},
         auth_region: str | None = None,
+        auth_kind: str | None = None,
     ) -> None:
         """Add a new MCP client configuration (lazy initialization)"""
         self.client_configs[name] = {
@@ -108,6 +109,7 @@ class MCPClientManager:
             "url": url,
             "headers": headers,
             "auth_region": auth_region,
+            "auth_kind": auth_kind,
         }
     
     def get_client(self, name: str) -> Optional[MCPClient]:
@@ -126,7 +128,17 @@ class MCPClientManager:
                         url = config["url"]
                         hdrs = config.get("headers") or {}
                         auth_region = config.get("auth_region")
-                        if auth_region:
+                        if config.get("auth_kind") == "notion_bearer":
+                            # Token is read per request (chat / env), so refreshed
+                            # tokens apply without rebuilding the client.
+                            import notion_bearer_auth
+                            auth = notion_bearer_auth.NotionBearerAuth()
+                            self.clients[name] = MCPClient(
+                                lambda u=url, a=auth: _streamable_http_with_auth(
+                                    u, a, terminate_on_close=True
+                                )
+                            )
+                        elif auth_region:
                             import agentcore_sigv4_auth
                             auth = agentcore_sigv4_auth.AgentCoreSigV4Auth(region=auth_region)
                             self.clients[name] = MCPClient(
@@ -447,12 +459,29 @@ def init_mcp_clients(mcp_servers: list):
             url = server_config["url"]
             headers = server_config.get("headers", {})
             auth_region = None
+            auth_kind = None
             if server_config.get("auth_type") == "aws_sigv4":
                 auth_region = server_config.get("auth_region", "us-west-2")
+            elif server_config.get("auth_type") == "notion_bearer":
+                auth_kind = "notion_bearer"
+                notion_token = (
+                    getattr(chat, "notion_access_token", None)
+                    or os.environ.get("NOTION_REMOTE_ACCESS_TOKEN")
+                    or ""
+                ).strip()
+                if not notion_token:
+                    logger.warning(
+                        "notion-remote MCP skipped: notion_access_token missing "
+                        "(connect Notion in the web UI)"
+                    )
+                    mcp_manager.remove_client(name)
+                    continue
             logger.info(f"Adding MCP client - name: {name}, url: {url}, headers: {headers}")
                 
             try:                
-                mcp_manager.add_streamable_client(name, url, headers, auth_region=auth_region)
+                mcp_manager.add_streamable_client(
+                    name, url, headers, auth_region=auth_region, auth_kind=auth_kind
+                )
                 logger.info(f"Successfully added streamable MCP client for {name}")
             except Exception as exc:
                 logger.error(f"Failed to add streamable MCP client for {name}: {exc}")

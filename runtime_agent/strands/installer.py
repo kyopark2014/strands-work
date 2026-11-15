@@ -182,16 +182,27 @@ def _resolve_account_id(config: dict) -> str:
 
 
 def _resolve_project_name(config: dict) -> str:
-    project_name = config.get("projectName") or ""
-    if project_name:
-        return project_name
+    """Always pin projectName to root installer.py to avoid cross-project contamination."""
+    expected = get_knowledge_base_name()
+    current = (config.get("projectName") or "").strip()
+    if current and current != expected:
+        print(f"  Correcting projectName: {current!r} -> {expected!r}")
+    return expected
 
-    app_config = _load_application_config()
-    project_name = app_config.get("projectName") or ""
-    if project_name:
-        return project_name
 
-    return get_knowledge_base_name()
+def runtime_ecr_repository_name(config: Optional[dict] = None) -> str:
+    """ECR repo for this runtime image: {projectName}_{runtime_folder}.
+
+    Always derive the folder from ``script_dir`` (``.../runtime_agent/strands``),
+    never ``os.getcwd()`` — root installer runs this script with cwd=repo root.
+    """
+    cfg = config or {}
+    configured = (cfg.get("ecr_repository") or "").strip()
+    if configured:
+        return configured
+    project_name = cfg.get("projectName") or get_knowledge_base_name()
+    runtime_folder = os.path.basename(script_dir)
+    return f"{project_name}_{runtime_folder}"
 
 
 def _ensure_config_defaults(config: dict) -> dict:
@@ -1695,12 +1706,10 @@ def push_to_ecr(*, skip_docker_build: bool = False, image_tag: Optional[str] = N
             print("Required: accountId, region, projectName")
             return False
         
-        # Get current folder name
-        current_folder_name = os.path.basename(os.getcwd())
+        current_folder_name = os.path.basename(script_dir)
         print(f"CURRENT_FOLDER_NAME: {current_folder_name}")
-        
-        # Construct ECR repository name
-        ecr_repository = f"{project_name}_{current_folder_name}"
+
+        ecr_repository = runtime_ecr_repository_name(config)
         print(f"ECR_REPOSITORY: {ecr_repository}")
         
         # Construct image tag and ECR URI
@@ -1808,9 +1817,7 @@ def get_latest_image_tag(config):
 
     try:
         aws_region = config['region']
-        project_name = config.get('projectName')
-        current_folder_name = os.path.basename(os.getcwd())
-        repository_name = f"{project_name}_{current_folder_name}"
+        repository_name = runtime_ecr_repository_name(config)
 
         ecr_client = boto3.client('ecr', region_name=aws_region)
         images: list = []
@@ -2179,12 +2186,10 @@ def create_agent_runtime():
         config = load_config()
         aws_region = config['region']
         project_name = config.get('projectName')
-        
-        # Get current folder name
-        current_folder_name = os.path.basename(os.getcwd())
-        repository_name = f"{project_name}_{current_folder_name}"
+
+        repository_name = runtime_ecr_repository_name(config)
         runtime_name = agent_runtime_name(project_name)
-        
+
         print(f"Repository name: {repository_name}")
         print(f"Runtime name: {runtime_name}")
         

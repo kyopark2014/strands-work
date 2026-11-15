@@ -63,6 +63,7 @@ def tool_slot_update(
     *,
     mcp_server: str | None = None,
     skill_name: str | None = None,
+    mcp_app: dict | None = None,
 ):
     if notification_queue is not None:
         notification_queue.tool_update(
@@ -70,6 +71,7 @@ def tool_slot_update(
             message,
             mcp_server=mcp_server,
             skill_name=skill_name,
+            mcp_app=mcp_app,
         )
 
 
@@ -171,6 +173,7 @@ def _process_strands_sse_event(data_json: dict, notification_queue, stream_state
             f"Tool Result: {_truncate_text(tool_result, _NOTIFY_TRUNCATE_CHARS)}",
             mcp_server=data_json.get("mcpServer"),
             skill_name=data_json.get("skillName"),
+            mcp_app=data_json.get("mcpApp"),
         )
         _collect_tool_result_artifacts(
             tool_name,

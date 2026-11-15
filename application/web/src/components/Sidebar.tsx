@@ -4,7 +4,9 @@ import { formatBrandTitle } from "../formatBrandTitle";
 import { useTheme } from "../hooks/useTheme";
 import type { Theme } from "../theme";
 import type { AppConfig, Task } from "../types";
+import { connectMcpOAuth } from "../mcpOAuth";
 import { ConfigDrawer } from "./ConfigDrawer";
+import { OAuthMcpFooter } from "./OAuthMcpFooter";
 import { ScheduleListModal } from "./ScheduleListModal";
 import { TaskListItem } from "./TaskListItem";
 import {
@@ -70,6 +72,7 @@ interface Props {
   sidebarResizing?: boolean;
   onSidebarResizeStart?: (e: ReactPointerEvent<HTMLDivElement>) => void;
   onSidebarResizeReset?: () => void;
+  onRefreshConfig?: () => Promise<AppConfig | void> | AppConfig | void;
 }
 
 export function Sidebar({
@@ -92,6 +95,7 @@ export function Sidebar({
   sidebarResizing = false,
   onSidebarResizeStart,
   onSidebarResizeReset,
+  onRefreshConfig,
 }: Props) {
   const skillBtnRef = useRef<HTMLButtonElement>(null);
   const mcpBtnRef = useRef<HTMLButtonElement>(null);
@@ -106,6 +110,8 @@ export function Sidebar({
   const [knowledgeGraphOpen, setKnowledgeGraphOpen] = useState(false);
   const [wikiGraphOpen, setWikiGraphOpen] = useState(false);
   const [wikiConfigureOpen, setWikiConfigureOpen] = useState(false);
+  const [notionBusy, setNotionBusy] = useState(false);
+  const [notionError, setNotionError] = useState<string | null>(null);
   const [wikiSyncBusy, setWikiSyncBusy] = useState(false);
   const [wikiSyncMessage, setWikiSyncMessage] = useState<string | null>(null);
   const [wikiSyncProgress, setWikiSyncProgress] = useState<{
@@ -665,8 +671,62 @@ export function Sidebar({
           options={config.mcp_servers}
           selected={mcpServers}
           anchorEl={mcpBtnRef.current}
-          onChange={(next) => activeTask && onPatchTask(activeTask.id, { mcp_servers: next })}
+          onChange={async (next) => {
+            if (!activeTask) return;
+            const enablingNotion =
+              next.includes("notion-remote") && !mcpServers.includes("notion-remote");
+            await onPatchTask(activeTask.id, { mcp_servers: next });
+            // First time on: open the Notion approval popup right away.
+            if (enablingNotion && !(config.notion_connected && config.notion_fresh)) {
+              setNotionError(null);
+              setNotionBusy(true);
+              try {
+                await connectMcpOAuth("notion");
+                if (onRefreshConfig) await onRefreshConfig();
+              } catch (err) {
+                setNotionError(err instanceof Error ? err.message : String(err));
+              } finally {
+                setNotionBusy(false);
+              }
+            }
+          }}
           onClose={handleDrawerClose}
+          footer={
+            mcpServers.includes("notion-remote") ? (
+              <OAuthMcpFooter
+                label="Notion"
+                mcpName="notion-remote"
+                connected={Boolean(config.notion_connected)}
+                fresh={Boolean(config.notion_fresh)}
+                busy={notionBusy}
+                error={notionError}
+                onConnect={async () => {
+                  setNotionError(null);
+                  setNotionBusy(true);
+                  try {
+                    await connectMcpOAuth("notion");
+                    if (onRefreshConfig) await onRefreshConfig();
+                  } catch (err) {
+                    setNotionError(err instanceof Error ? err.message : String(err));
+                  } finally {
+                    setNotionBusy(false);
+                  }
+                }}
+                onDisconnect={async () => {
+                  setNotionError(null);
+                  setNotionBusy(true);
+                  try {
+                    await api.disconnectOAuthMcp("notion");
+                    if (onRefreshConfig) await onRefreshConfig();
+                  } catch (err) {
+                    setNotionError(err instanceof Error ? err.message : String(err));
+                  } finally {
+                    setNotionBusy(false);
+                  }
+                }}
+              />
+            ) : null
+          }
         />
       )}
       {drawer === "strands" && config?.strands_tools && activeTask && (

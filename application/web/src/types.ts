@@ -14,6 +14,24 @@ export interface Task {
   updated_at: string;
 }
 
+export interface McpAppPayload {
+  resourceUri: string;
+  /** Legacy payloads inline the HTML; newer ones omit it and the host reads the resource. */
+  html?: string;
+  tool: string;
+  mcpServer?: string;
+  mimeType?: string;
+  csp?: Record<string, unknown>;
+  prefersBorder?: boolean;
+  /** Arguments the model passed to the tool (delivered as ui/notifications/tool-input). */
+  toolInput?: Record<string, unknown>;
+  toolResult?: {
+    content: Array<{ type: string; text?: string; [key: string]: unknown }>;
+    structuredContent?: unknown;
+    isError?: boolean;
+  };
+}
+
 export interface ToolEvent {
   type: "text" | "tool" | "tool_result" | "info";
   tool?: string;
@@ -24,6 +42,8 @@ export interface ToolEvent {
   input?: unknown;
   toolUseId?: string;
   data?: string;
+  /** MCP Apps UI payload (resource reference + initial tool result). */
+  mcpApp?: McpAppPayload;
 }
 
 export interface Message {
@@ -52,6 +72,8 @@ export interface AppConfig {
   default_guardrail_enabled?: boolean;
   default_memory_enabled?: boolean;
   default_strands_tools?: string[];
+  notion_connected?: boolean;
+  notion_fresh?: boolean;
 }
 
 /** True when /api/config returned authenticated capability catalogs. */

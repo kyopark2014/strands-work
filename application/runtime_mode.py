@@ -43,13 +43,31 @@ def run_agent(
     guardrail_enabled=None,
     memory_enabled=None,
     files=None,
-        task_id=None,
+    task_id=None,
 ):
     """Dispatch agent calls to AgentCore runtime only."""
     from application import agentcore_client
 
     if not use_agentcore_runtime():
         raise RuntimeError("AgentCore runtime is required for agent execution")
+
+    notion_token = None
+    try:
+        try:
+            from application import notion_auth
+        except ImportError:
+            import notion_auth
+
+        if notion_auth.mcp_selected(mcp_servers):
+            # get_access_token refreshes a near-expiry token with its refresh token.
+            notion_token = notion_auth.get_access_token(user_id)
+            if not notion_token:
+                logger.warning(
+                    "notion-remote MCP selected but no Notion token for %s", user_id
+                )
+    except Exception as e:
+        logger.warning("Notion token lookup failed: %s", e)
+
     try:
         return agentcore_client.run_agent(
             prompt,
@@ -64,6 +82,7 @@ def run_agent(
             memory_enabled=memory_enabled,
             files=files,
             task_id=task_id,
+            notion_access_token=notion_token,
         )
     except Exception:
         logger.exception("AgentCore run_agent failed")

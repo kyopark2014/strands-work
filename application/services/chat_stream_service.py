@@ -278,6 +278,8 @@ class ChatStreamService:
                 }
                 if event.get("mcpServer"):
                     mapped["mcpServer"] = event["mcpServer"]
+                if event.get("mcpApp"):
+                    mapped["mcpApp"] = event["mcpApp"]
                 if event.get("skillName"):
                     mapped["skillName"] = event["skillName"]
                 return mapped

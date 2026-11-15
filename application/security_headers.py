@@ -49,16 +49,21 @@ def _s3_connect_src_hosts() -> str:
     return " ".join(hosts)
 
 
+# MCP Apps UIs (srcdoc iframes inherit this CSP). Excalidraw loads from esm.sh.
+_MCP_APPS_STATIC_HOSTS = "https://esm.sh"
+_MCP_APPS_CONNECT_HOSTS = "https://esm.sh"
+
 # frame-src includes 'self' so Knowledge/Wiki Graph modals can iframe HTML
 # (without 'self' the graph iframe is blank).
 # connect-src includes S3 so Load-files / Wiki / RAG can PUT directly to presigned URLs.
+# script-src needs 'unsafe-inline' so MCP Apps srcdoc widgets can run.
 _CONTENT_SECURITY_POLICY = (
     "default-src 'self'; "
-    "script-src 'self'; "
-    "style-src 'self' 'unsafe-inline'; "
+    f"script-src 'self' 'unsafe-inline' {_MCP_APPS_STATIC_HOSTS}; "
+    f"style-src 'self' 'unsafe-inline' {_MCP_APPS_STATIC_HOSTS}; "
     "img-src 'self' data: blob: https:; "
-    "font-src 'self' data:; "
-    f"connect-src 'self' {_s3_connect_src_hosts()}; "
+    f"font-src 'self' data: {_MCP_APPS_STATIC_HOSTS}; "
+    f"connect-src 'self' {_s3_connect_src_hosts()} {_MCP_APPS_CONNECT_HOSTS}; "
     "frame-src 'self'; "
     "frame-ancestors 'none'; "
     "base-uri 'self'; "

@@ -1,7 +1,6 @@
 **/__pycache__
 **/*.pyc
 **/node_modules
-**/dist
 .git
 .gitignore
 .gitattributes
@@ -19,10 +18,12 @@ venv/
 .cursor/
 *.log
 
-# App local data (not for image)
+# App local data (not for image).
+# Do NOT use a blanket **/dist — application/mcp_app_views/dist must ship
+# (or be rebuilt in the image) for the Notion MCP App viewer.
 application/data/
 application/web/node_modules
-application/web/dist
+application/web/dist/
 
 # Infra must never ship in the web image (was ~5GB with providers/cdk.out)
 cdk/

@@ -116,6 +116,8 @@ def load_config(mcp_type):
         mcp_type = "aws_documentation"    
     elif mcp_type == "trade info":
         mcp_type = "trade_info"
+    elif mcp_type == "weather":
+        mcp_type = "korea_weather"
     elif mcp_type == "image generation":
         mcp_type = "image_generation"
     
@@ -176,7 +178,17 @@ def load_config(mcp_type):
                     ]
                 }
             }
-        }    
+        }
+
+    elif mcp_type == "korea_weather":
+        return {
+            "mcpServers": {
+                "korea-weather": {
+                    "command": "python",
+                    "args": [f"{workingDir}/mcp_server_korea_weather.py"],
+                }
+            }
+        }
     
     elif mcp_type == "web_fetch":
         # Prefer image-preinstalled package over npx (avoids NAT/npm cold start).
@@ -349,6 +361,30 @@ def load_config(mcp_type):
                     "args": [
                         f"{workingDir}/mcp_server_arxiv.py"
                     ]
+                }
+            }
+        }
+
+    elif mcp_type in ("notion-remote", "notion remote", "notion_remote"):
+        # Notion hosted MCP (OAuth bearer injected per request; see notion_bearer_auth.py).
+        return {
+            "mcpServers": {
+                "notion-remote": {
+                    "type": "streamable_http",
+                    "url": "https://mcp.notion.com/mcp",
+                    "auth_type": "notion_bearer",
+                }
+            }
+        }
+
+    elif mcp_type in ("excalidraw", "excalidraw-mcp", "excalidraw mcp"):
+        # Open-source Excalidraw MCP Apps (no auth). Diagram UI via ui://excalidraw/...
+        # https://mcp.excalidraw.com/mcp — Plus workspace MCP is a different endpoint.
+        return {
+            "mcpServers": {
+                "excalidraw": {
+                    "type": "streamable_http",
+                    "url": "https://mcp.excalidraw.com/mcp",
                 }
             }
         }

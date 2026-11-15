@@ -232,6 +232,14 @@ export interface WikiBrowseResult {
   shortcuts: { name: string; path: string }[];
 }
 
+export interface NotionStatus {
+  connected: boolean;
+  fresh: boolean;
+  expires_at?: number | null;
+  updated_at?: string | null;
+  write?: boolean;
+}
+
 export type GraphPattern = "pattern1" | "pattern2" | "pattern3";
 
 export interface SessionInfo {
@@ -378,6 +386,13 @@ export const api = {
     return request<WikiBrowseResult>(`/api/wiki/browse${q}`);
   },
   getSession: () => request<SessionInfo | null>("/api/session"),
+  getNotionStatus: () => request<NotionStatus>("/api/session/notion"),
+  getOAuthMcpAuthorizeUrl: (provider: "notion", write = false) =>
+    request<{ url: string; manual?: boolean }>(
+      `/api/session/${provider}/authorize${write ? "?write=true" : ""}`,
+    ),
+  disconnectOAuthMcp: (provider: "notion") =>
+    request<void>(`/api/session/${provider}`, { method: "DELETE" }),
   login: (username: string, password: string) =>
     request<SessionInfo>("/api/session/login", {
       method: "POST",

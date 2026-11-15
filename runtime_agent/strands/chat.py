@@ -71,6 +71,7 @@ reasoning_mode = "Disable"
 skill_mode = "Disable"
 guardrail_enabled = True
 memory_enabled = False
+notion_access_token: str | None = None
 
 # Memory related variables
 MSG_LENGTH = 100
@@ -160,9 +161,11 @@ def update(
     skillMode=None,
     guardrailEnabled=None,
     memoryEnabled=None,
+    notionAccessToken=None,
 ):
     global model_name, model_id, model_type, reasoning_mode, debug_mode, skill_mode
     global models, user_id, bedrock_region, guardrail_enabled, memory_enabled
+    global notion_access_token
 
     if userId is not None and userId != user_id:
         user_id = userId
@@ -201,6 +204,13 @@ def update(
     if memoryEnabled is not None and memory_enabled != memoryEnabled:
         memory_enabled = memoryEnabled
         logger.info(f"memory_enabled: {memory_enabled}")
+
+    if notionAccessToken is not None:
+        notion_access_token = (notionAccessToken or "").strip() or None
+        if notion_access_token:
+            os.environ["NOTION_REMOTE_ACCESS_TOKEN"] = notion_access_token
+        else:
+            os.environ.pop("NOTION_REMOTE_ACCESS_TOKEN", None)
 
 
 def _guardrail_config() -> dict | None:

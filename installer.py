@@ -1654,6 +1654,7 @@ def attach_ecs_schedule_policy(task_role_name: str) -> None:
                         "dynamodb:UpdateItem",
                         "dynamodb:DeleteItem",
                         "dynamodb:Query",
+                        "dynamodb:Scan",
                     ],
                     "Resource": [
                         f"arn:aws:dynamodb:{region}:{account_id}:table/{SCHEDULE_JOBS_TABLE_NAME}",
