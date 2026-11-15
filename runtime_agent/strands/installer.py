@@ -476,7 +476,7 @@ def _project_agent_runtime_resource_arns(config) -> list:
 
 
 # Runtime tools only touch CF-shared prefixes (upload/read artifacts, images, docs).
-# App data (tasks.db, graph, settings) lives under app-data/ on a separate S3 Files FS.
+# App data (graph, settings) lives under app-data/ on a separate S3 Files FS.
 RUNTIME_S3_OBJECT_PREFIXES = ("artifacts/", "*/artifacts/", "images/", "docs/")
 RUNTIME_S3_DENY_OBJECT_PREFIXES = ("app-data/", "agentcore-sessions/")
 
@@ -2111,7 +2111,8 @@ def create_agent_runtime_func(config, repository_name, image_tag):
             },
             filesystemConfigurations=session_storage_filesystem_configurations(config),
             networkConfiguration=network_configuration,
-            roleArn=agent_runtime_role
+            roleArn=agent_runtime_role,
+            platformVersion="V2",
         )
         
         print(f"✓ Agent runtime created: {response['agentRuntimeArn']}")
@@ -2157,7 +2158,8 @@ def update_agent_runtime_func(config, repository_name, agent_runtime_id, image_t
             filesystemConfigurations=session_storage_filesystem_configurations(config),
             roleArn=agent_runtime_role,
             networkConfiguration=network_configuration,
-            protocolConfiguration={"serverProtocol": "HTTP"}
+            protocolConfiguration={"serverProtocol": "HTTP"},
+            platformVersion="V2",
         )
         
         print(f"✓ Agent runtime updated: {response['agentRuntimeArn']}")

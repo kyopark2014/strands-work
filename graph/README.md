@@ -2,6 +2,8 @@
 
 Agent 채팅 DB(`tasks.db`)를 **Graphify 스타일 지식 그래프**로 만들고, 사용자별 관계 HTML(`out/graph_{user}.html`)로 봅니다.
 
+> 채팅 데이터의 원본은 DynamoDB입니다. `application/graph_jobs.py`가 파이프라인 실행 직전에 사용자별 임시 SQLite(`TASKS_DB_PATH`)로 export하고, 이 디렉터리의 코드는 그 파일만 읽습니다.
+
 **Cursor `/graphify` SKILL 없이** 이 폴더만으로 동작합니다. 시맨틱 추출은 **LiteLLM 게이트웨이**를 직접 호출합니다.
 
 ---

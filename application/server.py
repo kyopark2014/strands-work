@@ -19,12 +19,6 @@ from application.api.routes_artifacts import router as artifacts_router
 from application.api.routes_rag import router as rag_router
 from application.security_headers import SecurityHeadersMiddleware
 from application.task_store import init_db
-from application.task_store_persistence import (
-    flush_persist,
-    persistence_enabled,
-    persistent_db_path,
-    restore_tasks_db,
-)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,19 +47,7 @@ _ENABLE_API_DOCS = os.environ.get("ENABLE_API_DOCS", "").strip().lower() in {
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    restore_tasks_db()
     init_db()
-    if persistence_enabled():
-        logger.info(
-            "Global task DB persistence enabled: %s "
-            "(per-user tasks/messages use session_storage lazy restore)",
-            persistent_db_path(),
-        )
-    else:
-        logger.info(
-            "Task store using local SQLite; "
-            "per-user DBs under session_storage/{user}/{user}.db",
-        )
     try:
         from application import schedule_service
 
@@ -74,8 +56,6 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Startup schedule cleanup failed (non-fatal)")
     yield
-    flush_persist()
-    logger.info("Task store shutdown persist complete")
 
 
 app = FastAPI(

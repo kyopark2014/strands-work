@@ -5,7 +5,6 @@ from pydantic import BaseModel, Field
 from application.api.routes_auth import require_user_id
 from application import task_store
 from application import run_cancel
-from application.task_store_persistence import flush_persist
 from application import utils
 from application.run_state import query_task_run
 
@@ -151,7 +150,10 @@ def get_messages(task_id: str, request: Request):
     task = task_store.get_task_refreshing(task_id, user_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    return {"messages": task_store.list_messages(task_id, user_id)}
+    from application.tool_events_slim import slim_messages_for_api
+
+    messages = task_store.list_messages(task_id, user_id)
+    return {"messages": slim_messages_for_api(messages)}
 
 
 @router.get("/{task_id}/run")
@@ -196,7 +198,6 @@ def create_message(task_id: str, body: MessageCreate, request: Request):
         images=body.images,
         tool_events=body.tool_events,
     )
-    flush_persist(user_id)
     return message
 
 

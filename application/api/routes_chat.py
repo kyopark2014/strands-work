@@ -7,7 +7,6 @@ from pydantic import BaseModel, Field, model_validator
 
 from application.api.routes_auth import _kick_graph_job, require_user_id
 from application import task_store
-from application.task_store_persistence import flush_persist
 from application.services.chat_stream_service import ChatStreamService
 
 logger = logging.getLogger("routes_chat")
@@ -83,7 +82,6 @@ def chat_stream(task_id: str, body: ChatRequest, request: Request):
         pending_graph_kick["yes"] = True
 
     def on_flush() -> None:
-        flush_persist(user_id)
         if pending_graph_kick["yes"]:
             pending_graph_kick["yes"] = False
             _kick_graph_job(user_id)

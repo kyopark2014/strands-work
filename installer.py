@@ -64,12 +64,23 @@ custom_header_name = "X-Custom-Header"
 ALB_ORIGIN_HEADER_SECRET_NAME = f"{project_name}/cloudfront-alb-origin-header"
 SESSION_SIGNING_KEY_SECRET_NAME = f"{project_name}/session-signing-key"
 SCHEDULE_AGENT_TOKEN_SECRET_NAME = f"{project_name}/schedule-agent-token"
-SCHEDULE_JOBS_TABLE_NAME = f"dynamodb-{project_name}-schedules"
+SCHEDULE_JOBS_TABLE_NAME = f"{project_name}-schedules"
+TASKS_TABLE_NAME = f"{project_name}-tasks"
+MESSAGES_TABLE_NAME = f"{project_name}-messages"
+TASK_STORE_TABLE_NAMES = [TASKS_TABLE_NAME, MESSAGES_TABLE_NAME]
 SCHEDULE_LAMBDA_NAME = f"lambda-schedule-for-{project_name}"
 SCHEDULE_LAMBDA_ROLE_NAME = f"role-lambda-schedule-for-{project_name}-{region}"
 SCHEDULER_INVOKE_ROLE_NAME = f"role-scheduler-invoke-for-{project_name}-{region}"
 SCHEDULE_GROUP_NAME = f"schedule-group-{project_name}"
 CLOUDFRONT_SIGNING_KEY_SECRET_NAME = f"{project_name}/cloudfront-signing-key"
+# Account-wide CloudFront keys. ECS stacks share ecs-signing-key;
+# runtime stacks share runtime-signing-key. Do not create per-project keys.
+SHARED_ECS_SIGNING_KEY_NAME = "ecs-signing-key"
+SHARED_RUNTIME_SIGNING_KEY_NAME = "runtime-signing-key"
+SHARED_CLOUDFRONT_SIGNING_KEY_NAMES = (
+    SHARED_ECS_SIGNING_KEY_NAME,
+    SHARED_RUNTIME_SIGNING_KEY_NAME,
+)
 CLOUDFRONT_S3_SIGNED_PATHS = ("/images/*", "/docs/*", "/artifacts/*", "/*/artifacts/*")
 # Prefer a project custom ResponseHeadersPolicy (security headers + strip origin Server).
 # Managed SecurityHeadersPolicy (67f7725c-…) does not remove Server: uvicorn.
@@ -1679,6 +1690,108 @@ def attach_ecs_schedule_policy(task_role_name: str) -> None:
         },
     )
     logger.info(f"  ✓ Attached schedule policy to {task_role_name}")
+
+def create_task_store_tables() -> dict:
+    """DynamoDB tables for tasks / messages (replaces per-user SQLite tasks.db)."""
+    specs = [
+        {
+            "TableName": TASKS_TABLE_NAME,
+            "AttributeDefinitions": [
+                {"AttributeName": "user_id", "AttributeType": "S"},
+                {"AttributeName": "task_id", "AttributeType": "S"},
+            ],
+            "KeySchema": [
+                {"AttributeName": "user_id", "KeyType": "HASH"},
+                {"AttributeName": "task_id", "KeyType": "RANGE"},
+            ],
+        },
+        {
+            "TableName": MESSAGES_TABLE_NAME,
+            "AttributeDefinitions": [
+                {"AttributeName": "task_id", "AttributeType": "S"},
+                {"AttributeName": "message_id", "AttributeType": "S"},
+                {"AttributeName": "created_at", "AttributeType": "S"},
+            ],
+            "KeySchema": [
+                {"AttributeName": "task_id", "KeyType": "HASH"},
+                {"AttributeName": "message_id", "KeyType": "RANGE"},
+            ],
+            "LocalSecondaryIndexes": [
+                {
+                    "IndexName": "task_id-created_at-index",
+                    "KeySchema": [
+                        {"AttributeName": "task_id", "KeyType": "HASH"},
+                        {"AttributeName": "created_at", "KeyType": "RANGE"},
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                }
+            ],
+        },
+    ]
+    for spec in specs:
+        name = spec["TableName"]
+        logger.info(f"[task-store] Creating DynamoDB table: {name}")
+        try:
+            dynamodb_client.create_table(
+                **spec,
+                BillingMode="PAY_PER_REQUEST",
+                Tags=[
+                    {"Key": "Name", "Value": name},
+                    {"Key": "Project", "Value": project_name},
+                ],
+            )
+            dynamodb_client.get_waiter("table_exists").wait(TableName=name)
+            logger.info(f"  ✓ Created DynamoDB table: {name}")
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "ResourceInUseException":
+                raise
+            logger.warning(f"  DynamoDB table already exists: {name}")
+    return {
+        "tasks_table": TASKS_TABLE_NAME,
+        "messages_table": MESSAGES_TABLE_NAME,
+    }
+
+
+def attach_ecs_task_store_policy(task_role_name: str) -> None:
+    """Allow the ECS Web task to read/write the task-store tables."""
+    resources = []
+    for name in TASK_STORE_TABLE_NAMES:
+        resources.append(f"arn:aws:dynamodb:{region}:{account_id}:table/{name}")
+        resources.append(f"arn:aws:dynamodb:{region}:{account_id}:table/{name}/index/*")
+    attach_inline_policy(
+        task_role_name,
+        f"ecs-task-task-store-policy-for-{project_name}",
+        {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Sid": "TaskStoreTables",
+                    "Effect": "Allow",
+                    "Action": [
+                        "dynamodb:GetItem",
+                        "dynamodb:PutItem",
+                        "dynamodb:UpdateItem",
+                        "dynamodb:DeleteItem",
+                        "dynamodb:Query",
+                        "dynamodb:Scan",
+                        "dynamodb:BatchWriteItem",
+                        "dynamodb:BatchGetItem",
+                    ],
+                    "Resource": resources,
+                }
+            ],
+        },
+    )
+    logger.info(f"  ✓ Attached task-store policy to {task_role_name}")
+
+
+def deploy_task_store(ecs_task_role_name: str) -> dict:
+    """Provision DynamoDB tables + ECS task role permissions for the task store."""
+    info = create_task_store_tables()
+    if ecs_task_role_name:
+        attach_ecs_task_store_policy(ecs_task_role_name)
+    return info
+
 
 def deploy_schedule_infrastructure(
     *,
@@ -5588,93 +5701,38 @@ def _find_cloudfront_key_group_id(name: str) -> Optional[str]:
         marker = listing.get("NextMarker")
 
 
-def get_or_create_cloudfront_signing_material(*, rotate: bool = False) -> Dict[str, str]:
-    """
-    Ensure CloudFront RSA signing material exists.
+def _shared_cloudfront_signing_secret_name(key_name: str) -> str:
+    return f"shared/cloudfront/{key_name}"
 
-    Stores private PEM + public_key_id + key_group_id in Secrets Manager.
-    Creates CloudFront PublicKey + KeyGroup when missing.
-    """
-    secret_name = CLOUDFRONT_SIGNING_KEY_SECRET_NAME
-    public_key_name = f"{project_name}-signing-key"
-    key_group_name = f"{project_name}-signing-key-group"
 
-    material: Dict[str, str] = {}
+def _read_signing_secret(secret_name: str) -> Dict[str, str]:
     try:
         existing = secretsmanager_client.get_secret_value(SecretId=secret_name)
-        raw = (existing.get("SecretString") or "").strip()
-        if raw.startswith("{"):
-            parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                material = {
-                    "private_key_pem": (parsed.get("private_key_pem") or "").strip(),
-                    "public_key_pem": (parsed.get("public_key_pem") or "").strip(),
-                    "public_key_id": (parsed.get("public_key_id") or "").strip(),
-                    "key_group_id": (parsed.get("key_group_id") or "").strip(),
-                }
     except ClientError as e:
-        if e.response["Error"]["Code"] != "ResourceNotFoundException":
-            raise
+        if e.response["Error"]["Code"] == "ResourceNotFoundException":
+            return {}
+        raise
+    raw = (existing.get("SecretString") or "").strip()
+    if not raw.startswith("{"):
+        return {}
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        return {}
+    return {
+        "private_key_pem": (parsed.get("private_key_pem") or "").strip(),
+        "public_key_pem": (parsed.get("public_key_pem") or "").strip(),
+        "public_key_id": (parsed.get("public_key_id") or "").strip(),
+        "key_group_id": (parsed.get("key_group_id") or "").strip(),
+    }
 
-    if rotate or not material.get("private_key_pem") or not material.get("public_key_pem"):
-        private_pem, public_pem = _generate_cloudfront_rsa_keypair()
-        material["private_key_pem"] = private_pem
-        material["public_key_pem"] = public_pem
-        material["public_key_id"] = ""
-        material["key_group_id"] = ""
-        logger.info("  Generated new CloudFront RSA signing key pair")
 
-    public_key_id = material.get("public_key_id") or ""
-    if not public_key_id:
-        public_key_id = _find_cloudfront_public_key_id(public_key_name) or ""
-    if not public_key_id:
-        response = cloudfront_client.create_public_key(
-            PublicKeyConfig={
-                "CallerReference": f"{project_name}-cf-pk-{int(time.time())}",
-                "Name": public_key_name,
-                "EncodedKey": material["public_key_pem"],
-                "Comment": f"Signed cookies public key for {project_name}",
-            }
-        )
-        public_key_id = response["PublicKey"]["Id"]
-        logger.info(f"  ✓ Created CloudFront public key: {public_key_id}")
-    else:
-        logger.info(f"  ✓ Reusing CloudFront public key: {public_key_id}")
-    material["public_key_id"] = public_key_id
-
-    key_group_id = material.get("key_group_id") or ""
-    if not key_group_id:
-        key_group_id = _find_cloudfront_key_group_id(key_group_name) or ""
-    if not key_group_id:
-        response = cloudfront_client.create_key_group(
-            KeyGroupConfig={
-                "Name": key_group_name,
-                "Items": [public_key_id],
-                "Comment": f"Signed cookies key group for {project_name}",
-            }
-        )
-        key_group_id = response["KeyGroup"]["Id"]
-        logger.info(f"  ✓ Created CloudFront key group: {key_group_id}")
-    else:
-        try:
-            kg = cloudfront_client.get_key_group(Id=key_group_id)
-            etag = kg["ETag"]
-            config = kg["KeyGroup"]["KeyGroupConfig"]
-            items = list(config.get("Items") or [])
-            if public_key_id not in items:
-                config["Items"] = [public_key_id]
-                cloudfront_client.update_key_group(
-                    Id=key_group_id,
-                    KeyGroupConfig=config,
-                    IfMatch=etag,
-                )
-                logger.info(f"  ✓ Updated CloudFront key group items: {key_group_id}")
-            else:
-                logger.info(f"  ✓ Reusing CloudFront key group: {key_group_id}")
-        except ClientError as e:
-            logger.warning(f"  Could not verify key group {key_group_id}: {e}")
-    material["key_group_id"] = key_group_id
-
+def _write_signing_secret(
+    secret_name: str,
+    material: Dict[str, str],
+    *,
+    description: str,
+    tags: List[Dict[str, str]],
+) -> None:
     secret_body = json.dumps(
         {
             "private_key_pem": material["private_key_pem"],
@@ -5694,18 +5752,135 @@ def get_or_create_cloudfront_signing_material(*, rotate: bool = False) -> Dict[s
             raise
         secretsmanager_client.create_secret(
             Name=secret_name,
-            Description=f"CloudFront signed-cookie RSA key material for {project_name}",
+            Description=description,
             SecretString=secret_body,
-            Tags=[
-                {"Key": "Name", "Value": secret_name},
-                {"Key": "Project", "Value": project_name},
-            ],
+            Tags=tags,
         )
         logger.info(f"  ✓ Created CloudFront signing secret: {secret_name}")
 
+
+def _ensure_shared_cloudfront_signing_key(key_name: str) -> Dict[str, str]:
+    """Get or create one account-wide CloudFront public key and key group."""
+    secret_name = _shared_cloudfront_signing_secret_name(key_name)
+    key_group_name = f"{key_name}-group"
+    material = _read_signing_secret(secret_name)
+    public_key_id = _find_cloudfront_public_key_id(key_name) or ""
+
+    if public_key_id and not material.get("private_key_pem"):
+        raise RuntimeError(
+            f"CloudFront public key {key_name} ({public_key_id}) exists but "
+            f"shared secret {secret_name} has no private key. "
+            "Refusing to create a second key pair."
+        )
+
+    if not material.get("private_key_pem") or not material.get("public_key_pem"):
+        private_pem, public_pem = _generate_cloudfront_rsa_keypair()
+        material = {
+            "private_key_pem": private_pem,
+            "public_key_pem": public_pem,
+            "public_key_id": "",
+            "key_group_id": "",
+        }
+        logger.info(f"  Generated shared CloudFront RSA key pair: {key_name}")
+
+    if not public_key_id:
+        response = cloudfront_client.create_public_key(
+            PublicKeyConfig={
+                "CallerReference": f"{key_name}-{int(time.time())}",
+                "Name": key_name,
+                "EncodedKey": material["public_key_pem"],
+                "Comment": f"Shared signed-cookie public key ({key_name})",
+            }
+        )
+        public_key_id = response["PublicKey"]["Id"]
+        logger.info(f"  ✓ Created shared CloudFront public key {key_name}: {public_key_id}")
+    else:
+        logger.info(f"  ✓ Reusing shared CloudFront public key {key_name}: {public_key_id}")
+    material["public_key_id"] = public_key_id
+
+    key_group_id = material.get("key_group_id") or ""
+    if key_group_id:
+        try:
+            cloudfront_client.get_key_group(Id=key_group_id)
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "NoSuchKeyGroup":
+                raise
+            key_group_id = ""
+    if not key_group_id:
+        key_group_id = _find_cloudfront_key_group_id(key_group_name) or ""
+    if not key_group_id:
+        response = cloudfront_client.create_key_group(
+            KeyGroupConfig={
+                "Name": key_group_name,
+                "Items": [public_key_id],
+                "Comment": f"Shared signed-cookie key group ({key_name})",
+            }
+        )
+        key_group_id = response["KeyGroup"]["Id"]
+        logger.info(f"  ✓ Created shared CloudFront key group {key_group_name}: {key_group_id}")
+    else:
+        kg = cloudfront_client.get_key_group(Id=key_group_id)
+        config = kg["KeyGroup"]["KeyGroupConfig"]
+        items = list(config.get("Items") or [])
+        if public_key_id not in items:
+            config["Items"] = [public_key_id]
+            cloudfront_client.update_key_group(
+                Id=key_group_id,
+                KeyGroupConfig=config,
+                IfMatch=kg["ETag"],
+            )
+            logger.info(f"  ✓ Updated shared CloudFront key group {key_group_name}")
+        else:
+            logger.info(f"  ✓ Reusing shared CloudFront key group {key_group_name}: {key_group_id}")
+    material["key_group_id"] = key_group_id
+
+    _write_signing_secret(
+        secret_name,
+        material,
+        description=f"Shared CloudFront signed-cookie key ({key_name})",
+        tags=[
+            {"Key": "Name", "Value": secret_name},
+            {"Key": "SharedCloudFrontSigningKey", "Value": key_name},
+        ],
+    )
     return material
 
 
+def ensure_shared_cloudfront_signing_keys() -> Dict[str, Dict[str, str]]:
+    """Create ecs-signing-key and runtime-signing-key when they are missing."""
+    return {
+        key_name: _ensure_shared_cloudfront_signing_key(key_name)
+        for key_name in SHARED_CLOUDFRONT_SIGNING_KEY_NAMES
+    }
+
+
+def get_or_create_cloudfront_signing_material(*, rotate: bool = False) -> Dict[str, str]:
+    """Reuse the shared ECS CloudFront key and copy it into this project's secret.
+
+    ``runtime-signing-key`` is created alongside ``ecs-signing-key`` so runtime
+    stacks can share one key. This ECS distribution trusts ``ecs-signing-key``.
+    ``rotate`` is ignored: replacing a shared key would break other stacks.
+    """
+    if rotate:
+        logger.warning(
+            "  Ignoring CloudFront signing key rotation; shared keys are reused"
+        )
+    shared = ensure_shared_cloudfront_signing_keys()
+    material = shared[SHARED_ECS_SIGNING_KEY_NAME]
+    _write_signing_secret(
+        CLOUDFRONT_SIGNING_KEY_SECRET_NAME,
+        material,
+        description=(
+            f"CloudFront signed-cookie key for {project_name} "
+            f"(shared {SHARED_ECS_SIGNING_KEY_NAME})"
+        ),
+        tags=[
+            {"Key": "Name", "Value": CLOUDFRONT_SIGNING_KEY_SECRET_NAME},
+            {"Key": "Project", "Value": project_name},
+            {"Key": "SharedCloudFrontSigningKey", "Value": SHARED_ECS_SIGNING_KEY_NAME},
+        ],
+    )
+    return material
 
 
 def _cloudfront_s3_cache_behavior(
@@ -7509,9 +7684,8 @@ def deploy_ecs_service(
         ]
         environment.extend(
             [
-                {"name": "TASK_DB_MOUNT", "value": app_data_mount},
                 {"name": "TASK_DB_PROJECT", "value": project_name},
-                # graph/settings/tasks.db live on app-data; skills are loaded via S3 API.
+                # graph/settings live on app-data; skills are loaded via S3 API.
                 {"name": "SESSION_STORAGE_DIR", "value": app_data_mount},
             ]
         )
@@ -9202,7 +9376,7 @@ def create_s3_files_app_data_storage(
     ecs_sg_id: str = "",
     ecs_task_role_name: str = "",
 ) -> Dict[str, object]:
-    """Provision a separate S3 Files FS for ECS (tasks.db / graph / settings / litellm)."""
+    """Provision a separate S3 Files FS for ECS (graph / settings / litellm)."""
     logger.info("[5.6/10] Creating S3 Files app-data storage (ECS)")
     vpc_id = vpc_info["vpc_id"]
     private_subnets = vpc_info.get("private_subnets") or []
@@ -9411,6 +9585,11 @@ def main():
         help="(Legacy EC2) Run setup script on existing EC2 instance via SSM.",
     )
     parser.add_argument(
+        "--task-store-only",
+        action="store_true",
+        help="Create only the DynamoDB task-store tables + ECS task role policy.",
+    )
+    parser.add_argument(
         "--schedule-only",
         action="store_true",
         help="Deploy only my-schedule infra (DynamoDB, Lambda, Scheduler) and update config.",
@@ -9442,6 +9621,12 @@ def main():
         return
     
     # If --verify-deployment flag is provided, verify EC2 subnet deployment
+
+    if getattr(args, "task_store_only", False):
+        info = deploy_task_store(f"role-ecs-task-for-{project_name}-{region}")
+        for key, value in info.items():
+            logger.info(f"  {key}: {value}")
+        return
 
     if getattr(args, "schedule_only", False):
         cfg = {}
@@ -9579,6 +9764,9 @@ def main():
             app_base_url=f"https://{cloudfront_info['domain']}",
             ecs_task_role_name=ecs_task_role_name,
         )
+
+        # 7.6 Task store: DynamoDB tables (tasks / messages)
+        deploy_task_store(ecs_task_role_name)
         
         # 8. Build and push Docker image to ECR, then deploy ECS service
         sync_application_capability_lists()

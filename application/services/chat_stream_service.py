@@ -29,6 +29,10 @@ AGENT_STREAM_MAX_SECONDS = 14400
 # worker to finish so the final answer can still be persisted for refresh.
 LATE_PERSIST_WAIT_SECONDS = 1800
 STREAMING_PREFIX_COMPARISON_LENGTH = 80
+# Write the visible partial answer while tokens are still arriving.
+STREAMING_CHECKPOINT_SECONDS = 2.0
+# Copy the working DB to durable storage less often than the SQLite upsert.
+STREAMING_FLUSH_SECONDS = 5.0
 CLIENT_SAFE_AGENT_ERROR = "Agent processing failed"
 CLIENT_SAFE_AGENT_TIMEOUT = "Agent timeout"
 
@@ -502,8 +506,59 @@ class ChatStreamService:
 
     @staticmethod
     def _messages_need_assistant(task_id: str, user_id: str) -> bool:
+        """True until the latest row is a finished assistant message.
+
+        A ``streaming`` draft still needs the final overwrite.
+        """
         messages = task_store.list_messages(task_id, user_id)
-        return not messages or messages[-1].get("role") != "assistant"
+        if not messages:
+            return True
+        last = messages[-1]
+        if last.get("role") != "assistant":
+            return True
+        return last.get("status") == task_store.MESSAGE_STATUS_STREAMING
+
+    def checkpoint_streaming_draft(
+        self,
+        *,
+        task_id: str | None,
+        user_id: str | None,
+        streamed_text: str,
+        tool_events: list[dict[str, Any]],
+        images: list[str] | None,
+        on_flush: Any,
+        state: dict[str, Any],
+        force: bool = False,
+    ) -> None:
+        """Upsert the in-progress assistant row so a refresh can show it."""
+        if not task_id or not user_id:
+            return
+        content = streamed_text or ""
+        events = list(tool_events)
+        image_list = list(images or [])
+        if not content.strip() and not events and not image_list:
+            return
+        now = time.monotonic()
+        if not force and now - float(state.get("at") or 0) < STREAMING_CHECKPOINT_SECONDS:
+            return
+        try:
+            task_store.upsert_streaming_message(
+                task_id,
+                user_id,
+                content,
+                images=image_list,
+                tool_events=events,
+            )
+        except Exception:
+            logger.exception("Failed to checkpoint streaming assistant draft")
+            return
+        state["at"] = now
+        if force or now - float(state.get("flushed_at") or 0) >= STREAMING_FLUSH_SECONDS:
+            try:
+                on_flush()
+            except Exception:
+                logger.exception("Failed to flush streaming assistant draft")
+            state["flushed_at"] = now
 
     def _persist_assistant_now(
         self,
@@ -642,6 +697,7 @@ class ChatStreamService:
         tool_meta: dict[str, dict[str, Any]] = {}
         streamed_text = ""
         sse_closed_early = False
+        checkpoint_state: dict[str, Any] = {"at": 0.0, "flushed_at": 0.0}
 
         try:
             started_at = time.monotonic()
@@ -714,6 +770,16 @@ class ChatStreamService:
                 )
                 for event in events_to_emit:
                     yield sse_event(event)
+                if not _is_run_cancelled(result_holder, task_id):
+                    self.checkpoint_streaming_draft(
+                        task_id=task_id,
+                        user_id=user_id,
+                        streamed_text=streamed_text,
+                        tool_events=tool_events,
+                        images=list(result_holder.get("images") or []),
+                        on_flush=on_flush,
+                        state=checkpoint_state,
+                    )
 
             if "error" in result_holder:
                 safe_error = result_holder.get("error") or CLIENT_SAFE_AGENT_ERROR
@@ -775,6 +841,19 @@ class ChatStreamService:
                     "(client stop message)"
                 )
                 raise
+            # Keep the partial answer even if the worker has not finished.
+            # A later complete write overwrites this same streaming row.
+            if task_id and user_id:
+                self.checkpoint_streaming_draft(
+                    task_id=task_id,
+                    user_id=user_id,
+                    streamed_text=streamed_text,
+                    tool_events=tool_events,
+                    images=list(result_holder.get("images") or []),
+                    on_flush=on_flush,
+                    state=checkpoint_state,
+                    force=True,
+                )
             # Always persist if DB still ends on user — including the race where
             # the worker finished (already_final) but add_message never ran.
             needs_assistant = (

@@ -61,7 +61,7 @@ s3_bucket = config.get("s3_bucket")
 path = config.get("sharing_url")
 sharing_url = path
 
-model_name = "Claude 4.6 Sonnet"
+model_name = "Claude 5.0 Sonnet"
 debug_mode = "Enable"
 models = info.get_model_info(model_name)
 model_id = models[0]["model_id"]

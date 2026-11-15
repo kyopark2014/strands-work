@@ -22,7 +22,7 @@ CDK 스택과 동등한 AWS 인프라를 프로그래밍 방식으로 배포합�
 - **Web UI**: ECS Fargate (`application/` — FastAPI + 프론트엔드) — 사용자 입력·MCP/Skill 선택·결과 표시
 - **Strands Agent**: AgentCore Runtime (`runtime_agent/strands/installer.py`) — 추론·MCP·Skill 실행
 - MCP 서버는 Runtime 컨테이너 **내부**에서 기동됩니다.
-- **S3 Files**: AgentCore 세션·ECS `tasks.db` 영속화를 위해 S3 버킷을 NFS로 마운트
+- **S3 Files**: AgentCore 세션·ECS app-data 영속화를 위해 S3 버킷을 NFS로 마운트
 
 ### 주요 특징
 - **완전 자동화**: 단일 스크립트로 ECS·RAG·네트워킹 인프라 배포
@@ -206,11 +206,11 @@ VPC 생성 직후 session FS(`[5.5]`)와 app-data FS(`[5.6]`)를 **멱등**으�
 |--------|------|
 | Sync IAM role | `role-s3files-sync-for-{project_name}` — S3 bucket ↔ NFS 동기화 |
 | Session FS | prefix `agentcore-sessions/` — skills, artifacts, checkpoints |
-| App-data FS | prefix `app-data/` — `tasks.db`, graph, settings, litellm |
+| App-data FS | prefix `app-data/` — graph, settings, litellm |
 | Mount targets / Access points | FS별 private subnet + POSIX `uid/gid: 0/0` |
 
 - **AgentCore**: session FS → `/mnt/workspace`
-- **ECS**: app-data FS → `/mnt/app-data` (`TASK_DB_MOUNT` / graph / settings)
+- **ECS**: app-data FS → `/mnt/app-data` (graph / settings)
 - 배포 시 `agentcore-sessions/` → `app-data/` 마이그레이션 후 민감 객체(session 쪽 `application-database/`, `litellm/`) 제거
 - Runtime IAM: `app-data/*`·`agentcore-sessions/*` S3 API Deny; UI skills는 S3 API로 `agentcore-sessions/{user}/skills/` 조회
 - Runtime SG를 Bedrock/AgentCore/Secrets VPC endpoint에 연결
@@ -224,7 +224,7 @@ VPC 생성 직후 session FS(`[5.5]`)와 app-data FS(`[5.6]`)를 **멱등**으�
 - **타겟 그룹**: ECS Fargate 태스크 (IP 타겟, 포트 8501)
 - **헬스체크**: `/api/health`
 - **Idle timeout**: 120초 (`ALB_IDLE_TIMEOUT_SECONDS`) — 장시간 SSE 스트림 유지
-- **Stickiness**: `app_cookie` on `agent_user_id` (86400초). SQLite working-copy 일관성용.  
+- **Stickiness**: `app_cookie` on `agent_user_id` (86400초). ECS task 단위 in-memory run 상태(스트리밍·cancel) 일관성용.  
   `lb_cookie`(AWSALB/AWSALBCORS)는 Secure/HttpOnly를 설정할 수 없어 사용하지 않음 ([AWS guidance](https://repost.aws/knowledge-center/elb-secure-flag-alb-cookies)).  
   세션 쿠키는 앱이 HttpOnly + Secure(HTTPS) + SameSite=Lax로 발급.
 - **Origin 보호**: listener default = **403 fixed-response**, `X-Custom-Header` 일치 시에만 ECS target group으로 forward (`ensure_alb_listener_origin_protection`)
@@ -521,7 +521,7 @@ Total deployment time: XX.XX minutes
 | `latest_image_tag`, `build_number` | ECR 이미지 빌드 태그 |
 | `collectionArn`, `opensearch_url` | 레거시 호환용 빈 값 |
 
-ECS 컨테이너에는 `APP_CONFIG_JSON` 환경변수로 동일한 설정이 주입되며, `docker-entrypoint.sh`가 시작 시 `application/config.json`으로 기록합니다. S3 Files 마운트 시 `TASK_DB_MOUNT=/mnt/app-data`, `TASK_DB_PROJECT=strands-runtime`도 주입됩니다.
+ECS 컨테이너에는 `APP_CONFIG_JSON` 환경변수로 동일한 설정이 주입되며, `docker-entrypoint.sh`가 시작 시 `application/config.json`으로 기록합니다. `TASK_DB_PROJECT=strands-runtime`도 주입됩니다.
 
 ### Docker Container 구성
 

@@ -42,7 +42,7 @@ def table_name() -> str:
     if name:
         return name
     project = (cfg.get("projectName") or "agentic-work").strip() or "agentic-work"
-    return f"dynamodb-{project}-schedules"
+    return f"{project}-schedules"
 
 
 def _table():

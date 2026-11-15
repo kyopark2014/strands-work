@@ -29,9 +29,17 @@ from typing import Any
 
 from application import run_registry
 from application import task_store
-from application.task_store_persistence import flush_persist
+from application.tool_events_slim import slim_tool_events
 
 logger = logging.getLogger("run_state")
+
+
+def _is_streaming_assistant(message: dict[str, Any] | None) -> bool:
+    return bool(
+        message
+        and message.get("role") == "assistant"
+        and message.get("status") == task_store.MESSAGE_STATUS_STREAMING
+    )
 
 
 def _hydrate_assistant_if_needed(
@@ -46,7 +54,11 @@ def _hydrate_assistant_if_needed(
     if not content:
         return False
     messages = task_store.list_messages(task_id, user_id)
-    if messages and messages[-1].get("role") == "assistant":
+    if (
+        messages
+        and messages[-1].get("role") == "assistant"
+        and not _is_streaming_assistant(messages[-1])
+    ):
         return False
     task_store.add_message(
         task_id,
@@ -56,7 +68,6 @@ def _hydrate_assistant_if_needed(
         images=images or [],
         tool_events=[],
     )
-    flush_persist(user_id)
     logger.info(
         "Hydrated assistant message from run query (%s chars) task=%s",
         len(content),
@@ -80,10 +91,13 @@ def query_task_run(task_id: str, user_id: str) -> dict[str, Any]:
         }
 
     messages = task_store.list_messages(task_id, user_id)
-    last_role = messages[-1]["role"] if messages else None
+    last = messages[-1] if messages else None
+    last_role = last["role"] if last else None
+    last_streaming = _is_streaming_assistant(last)
 
-    # 1) Messages already complete → idle
-    if last_role == "assistant":
+    # 1) A finished assistant row means the turn is idle.
+    # A streaming draft stays visible while the registry is checked.
+    if last_role == "assistant" and not last_streaming:
         last = messages[-1]
         return {
             "task_id": task_id,
@@ -98,14 +112,20 @@ def query_task_run(task_id: str, user_id: str) -> dict[str, Any]:
     # 2) In-process registry (browser refresh while same process still runs)
     reg = run_registry.get(task_id)
     if reg and reg.get("status") == "running":
+        draft_content = (last.get("content") or "") if last_streaming and last else ""
+        draft_images = list(last.get("images") or []) if last_streaming and last else []
+        live_events = list(reg.get("tool_events") or [])
+        if not live_events and last_streaming and last:
+            live_events = list(last.get("tool_events") or [])
         return {
             "task_id": task_id,
             "status": "running",
-            "content": "",
-            "images": [],
+            "content": draft_content,
+            "images": draft_images,
             "error": None,
-            "source": "registry",
+            "source": "registry" if not last_streaming else "messages",
             "hydrated": False,
+            "tool_events": slim_tool_events(live_events),
         }
 
     if reg and reg.get("status") in ("done", "error"):
@@ -131,7 +151,7 @@ def query_task_run(task_id: str, user_id: str) -> dict[str, Any]:
         if run_cancel.is_cancel_noise(content):
             content = ""
         hydrated = False
-        if content and last_role == "user":
+        if content and (last_role == "user" or last_streaming):
             hydrated = _hydrate_assistant_if_needed(
                 task_id=task_id,
                 user_id=user_id,
@@ -157,6 +177,18 @@ def query_task_run(task_id: str, user_id: str) -> dict[str, Any]:
             "status": "idle",
             "content": "",
             "images": [],
+            "error": None,
+            "source": "messages",
+            "hydrated": False,
+        }
+
+    # Stream died after a draft was saved. Keep that row on screen.
+    if last_streaming and last:
+        return {
+            "task_id": task_id,
+            "status": "idle",
+            "content": last.get("content") or "",
+            "images": last.get("images") or [],
             "error": None,
             "source": "messages",
             "hydrated": False,

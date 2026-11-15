@@ -63,7 +63,11 @@ COGNITO_CLIENT_NAME = f"{project_name}-web-ui"
 ALB_ORIGIN_HEADER_SECRET_NAME = f"{project_name}/cloudfront-alb-origin-header"
 SESSION_SIGNING_KEY_SECRET_NAME = f"{project_name}/session-signing-key"
 SCHEDULE_AGENT_TOKEN_SECRET_NAME = f"{project_name}/schedule-agent-token"
-SCHEDULE_JOBS_TABLE_NAME = f"dynamodb-{project_name}-schedules"
+SCHEDULE_JOBS_TABLE_NAME = f"{project_name}-schedules"
+TASK_STORE_TABLE_NAMES = [
+    f"{project_name}-tasks",
+    f"{project_name}-messages",
+]
 SCHEDULE_LAMBDA_NAME = f"lambda-schedule-for-{project_name}"
 SCHEDULE_LAMBDA_ROLE_NAME = f"role-lambda-schedule-for-{project_name}-{region}"
 SCHEDULER_INVOKE_ROLE_NAME = f"role-scheduler-invoke-for-{project_name}-{region}"
@@ -1723,8 +1727,14 @@ def delete_alb_origin_header_secret() -> None:
 
 
 def delete_cloudfront_signing_key_secret() -> None:
-    """Delete CloudFront signed-cookie RSA key material from Secrets Manager."""
+    """Delete this project's copy of the CloudFront signing secret.
+
+    Shared keys ``ecs-signing-key`` and ``runtime-signing-key`` stay in place.
+    """
     logger.info("Deleting CloudFront signing key secret")
+    logger.info(
+        "  Keeping shared CloudFront keys ecs-signing-key and runtime-signing-key"
+    )
     secret_name = CLOUDFRONT_SIGNING_KEY_SECRET_NAME
     try:
         secretsmanager_client.delete_secret(
@@ -1870,13 +1880,14 @@ def delete_schedule_infrastructure() -> None:
         if code not in ("ResourceNotFoundException", "ResourceNotFound"):
             logger.warning(f"  Could not delete Lambda: {e}")
 
-    try:
-        dynamodb_client.delete_table(TableName=SCHEDULE_JOBS_TABLE_NAME)
-        logger.info(f"  ✓ Deleted DynamoDB table: {SCHEDULE_JOBS_TABLE_NAME}")
-    except ClientError as e:
-        code = e.response.get("Error", {}).get("Code", "")
-        if code not in ("ResourceNotFoundException", "ResourceNotFound"):
-            logger.warning(f"  Could not delete DynamoDB table: {e}")
+    for table_name in [SCHEDULE_JOBS_TABLE_NAME, *TASK_STORE_TABLE_NAMES]:
+        try:
+            dynamodb_client.delete_table(TableName=table_name)
+            logger.info(f"  ✓ Deleted DynamoDB table: {table_name}")
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code not in ("ResourceNotFoundException", "ResourceNotFound"):
+                logger.warning(f"  Could not delete DynamoDB table {table_name}: {e}")
 
     try:
         secretsmanager_client.delete_secret(
@@ -2393,8 +2404,14 @@ def delete_session_signing_key_secret() -> None:
 
 
 def delete_cloudfront_signing_key_secret() -> None:
-    """Delete CloudFront signed-cookie RSA key material from Secrets Manager."""
+    """Delete this project's copy of the CloudFront signing secret.
+
+    Shared keys ``ecs-signing-key`` and ``runtime-signing-key`` stay in place.
+    """
     logger.info("Deleting CloudFront signing key secret")
+    logger.info(
+        "  Keeping shared CloudFront keys ecs-signing-key and runtime-signing-key"
+    )
     secret_name = CLOUDFRONT_SIGNING_KEY_SECRET_NAME
     try:
         secretsmanager_client.delete_secret(

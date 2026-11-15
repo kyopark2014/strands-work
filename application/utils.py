@@ -51,7 +51,7 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 config_path = os.path.join(script_dir, "config.json")
 favorite_tools_path = os.path.join(script_dir, "favorite_tools.json")
 
-# ECS: /mnt/app-data is the storage bucket root (tasks.db, graph, settings).
+# ECS: /mnt/app-data is the storage bucket root (graph, settings).
 # Runtime: /mnt/workspace is the same bucket root (skills, artifacts, checkpoints).
 def _default_session_storage_dir() -> str:
     """Prefer ECS app-data mount, then Runtime workspace, then local fallback."""
@@ -988,12 +988,6 @@ def normalize_graph_pattern(value: object | None) -> str:
         "holisticview": "pattern3",
     }
     return aliases.get(raw, DEFAULT_GRAPH_PATTERN)
-
-
-def get_user_db_path(user_id: str | None) -> str:
-    """Durable per-user tasks/messages DB: {SESSION_STORAGE_DIR}/{user_id}/{user_id}.db."""
-    segment = sanitize_user_path_segment(user_id) or "default"
-    return os.path.join(SESSION_STORAGE_DIR, segment, f"{segment}.db")
 
 
 def get_user_settings_path(user_id: str | None) -> str:

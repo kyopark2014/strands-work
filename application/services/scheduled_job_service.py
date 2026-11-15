@@ -10,7 +10,6 @@ from typing import Any, Optional
 from application import schedule_store
 from application import task_store
 from application.services.chat_stream_service import ChatStreamService
-from application.task_store_persistence import flush_persist
 
 logger = logging.getLogger("scheduled_job_service")
 
@@ -96,7 +95,6 @@ def run_scheduled_job(job_id: str) -> dict[str, Any]:
             tool_events=events,
         )
         schedule_store.mark_run(job_id, status="error", error=str(error)[:500])
-        flush_persist(user_id)
         return {"ok": False, "status": "error", "error": error}
 
     content, images, tool_events = service._build_final_payload(
@@ -112,7 +110,6 @@ def run_scheduled_job(job_id: str) -> dict[str, Any]:
         images=images,
         tool_events=tool_events,
     )
-    flush_persist(user_id)
     schedule_store.mark_run(job_id, status="ok")
     logger.info("Scheduled job %s completed for task %s", job_id, task_id)
     return {"ok": True, "status": "ok", "job_id": job_id, "task_id": task_id}
