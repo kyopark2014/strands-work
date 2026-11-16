@@ -860,6 +860,8 @@ export default function App() {
               syncModel={activeTask?.model_name}
               disabled={!activeTask}
               waiting={showWaiting}
+              streamEvents={activeStream.streamEvents}
+              streamText={activeStream.streamText}
               queuedMessages={activeQueuedMessages}
               queuePaused={activeQueuePaused}
               onRemoveQueued={handleRemoveQueued}
