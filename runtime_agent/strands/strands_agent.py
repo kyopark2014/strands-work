@@ -95,7 +95,8 @@ BASE_SYSTEM_PROMPT = (
     "결과 파일은 파일명만으로 저장·참조한다 (예: report.docx, chart.png). "
     "application/artifacts/ 같은 경로는 자동으로 artifacts/로 매핑된다. "
     "skill 스크립트는 $WORKING_DIR/skills/... 절대 경로로 호출한다.\n"
-    "6. 있으면 upload_file_to_s3로 업로드하여 URL을 제공한다\n"
+    "6. 있으면 upload_file_to_s3로 업로드하여 URL을 제공한다 "
+    "(.md/.json/.csv는 View URL, 직접 저장은 Download URL)\n"
     "7. 최종 결과를 사용자에게 전달한다\n"
 )
 

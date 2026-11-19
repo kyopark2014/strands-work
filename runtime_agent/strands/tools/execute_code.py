@@ -18,7 +18,7 @@ from strands import tool
 import utils
 import tools.workspace as workspace
 from tools.workspace import WORKING_DIR, REPO_ROOT, ARTIFACTS_REL
-from tools.s3_upload import build_s3_key, workspace_mount_object_key
+from tools.s3_upload import build_s3_key, put_object_and_wait, workspace_mount_object_key
 from tools.bash import _ensure_user_site_on_sys_path
 from urllib.parse import quote
 
@@ -81,13 +81,10 @@ def _touched_artifact_paths(before: dict, after: dict) -> list:
 
 
 def _upload_file_to_project_s3(rel_path: str, full_path: str) -> str:
-    """Return the ``{user}/artifacts/`` object key.
+    """Return the ``{user}/artifacts/`` object key after PutObject.
 
-    Files already on the workspace mount are that object. PutObject runs only
-    when the file is not on the mount, so CloudFront still has a single key.
+    Always uploads via the S3 API so viewers do not race S3 Files mount sync.
     """
-    import boto3
-
     s3_bucket = utils.get_s3_bucket()
     if not s3_bucket:
         raise RuntimeError("S3 bucket is not configured.")
@@ -98,23 +95,12 @@ def _upload_file_to_project_s3(rel_path: str, full_path: str) -> str:
     key = build_s3_key(f"artifacts/{rel_path}", content_type=content_type)
     mount_key = workspace_mount_object_key(full_path)
     if mount_key:
-        logger.info("artifact already on workspace mount: %s", mount_key)
-        return mount_key
-
-    region = utils.get_aws_region()
-    s3 = boto3.client("s3", region_name=region)
-    put_params = {"Bucket": s3_bucket, "Key": key}
-    if content_type and content_type != "no info":
-        put_params["ContentType"] = content_type
-    with open(full_path, "rb") as f:
-        put_params["Body"] = f.read()
-        s3.put_object(**put_params)
-    logger.info("uploaded artifact to s3://%s/%s", s3_bucket, key)
-    return key
+        key = mount_key
+    return put_object_and_wait(full_path, key, content_type=content_type)
 
 
 def _ensure_artifacts_uploaded(relative_paths: list) -> None:
-    """Publish artifact URLs. Skip PutObject when the workspace mount is the object."""
+    """Publish artifact URLs via PutObject so S3 API visibility is immediate."""
     sharing_url = utils.get_sharing_url()
     if not sharing_url or not utils.get_s3_bucket():
         return

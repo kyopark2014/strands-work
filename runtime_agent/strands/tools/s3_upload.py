@@ -15,10 +15,12 @@
 import logging
 import os
 import re
+import time
 from urllib import parse
 
 from strands import tool
 
+import unicode_paths
 import utils
 import tools.workspace as workspace
 from tools.workspace import WORKING_DIR
@@ -30,6 +32,9 @@ logger = logging.getLogger("strands-agent")
 _ALLOWED_KEY_PREFIXES = ("artifacts/", "images/", "docs/")
 _UNSAFE_KEY_CHARS = re.compile(r"[^A-Za-z0-9._\-/= ]+")
 _WORKSPACE_MOUNT = "/mnt/workspace"
+_ARTIFACT_PRESIGN_GET_EXPIRES = 12 * 3600  # 12h; capped by IAM role temp-cred lifetime
+_ARTIFACT_S3_HEAD_TIMEOUT_SEC = 10.0
+_ARTIFACT_S3_HEAD_INTERVAL_SEC = 0.25
 
 
 def s3_uri_to_console_url(uri: str, region: str) -> str:
@@ -129,11 +134,7 @@ def is_shareable_s3_key(key: str) -> bool:
 
 
 def workspace_mount_object_key(full_path: str) -> str | None:
-    """S3 key when ``full_path`` is already an object on the workspace mount.
-
-    ``/mnt/workspace/{user}/artifacts/…`` is the bucket object. Uploading it
-    again would write a second key.
-    """
+    """S3 key when ``full_path`` is already an object on the workspace mount."""
     if not full_path or not os.path.isdir(_WORKSPACE_MOUNT):
         return None
     real = os.path.realpath(full_path)
@@ -147,6 +148,94 @@ def workspace_mount_object_key(full_path: str) -> str | None:
     if rel in ("", ".") or rel.startswith("../"):
         return None
     return rel
+
+
+def _nfc_s3_key(key: str) -> str:
+    """Compose Hangul in each path segment so viewer NFC lookups match."""
+    parts = [unicode_paths.nfc(part) for part in (key or "").split("/") if part]
+    return "/".join(parts)
+
+
+def _s3_client_for_presign(region: str | None = None):
+    """Regional virtual-hosted S3 client for browser-safe presigned URLs."""
+    import boto3
+    from botocore.config import Config
+
+    resolved_region = region or utils.get_aws_region()
+    return boto3.client(
+        service_name="s3",
+        region_name=resolved_region,
+        endpoint_url=f"https://s3.{resolved_region}.amazonaws.com",
+        config=Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "virtual"},
+        ),
+    )
+
+
+def _wait_for_s3_object(s3, *, bucket: str, key: str) -> None:
+    """Poll head_object until the key is visible via the S3 API."""
+    from botocore.exceptions import ClientError
+
+    deadline = time.monotonic() + _ARTIFACT_S3_HEAD_TIMEOUT_SEC
+    last_error: Exception | None = None
+    while True:
+        try:
+            s3.head_object(Bucket=bucket, Key=key)
+            return
+        except ClientError as exc:
+            last_error = exc
+            code = (exc.response.get("Error") or {}).get("Code", "")
+            if code not in {"404", "NoSuchKey", "NotFound"}:
+                raise
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(_ARTIFACT_S3_HEAD_INTERVAL_SEC)
+    if last_error is not None:
+        raise RuntimeError(
+            f"S3 object not visible after put_object: s3://{bucket}/{key}"
+        ) from last_error
+    raise RuntimeError(f"S3 object not visible after put_object: s3://{bucket}/{key}")
+
+
+def _presigned_get_url_for_key(key: str, *, expires_in: int = _ARTIFACT_PRESIGN_GET_EXPIRES) -> str | None:
+    s3_bucket = utils.get_s3_bucket()
+    if not s3_bucket or not key:
+        return None
+    try:
+        s3 = _s3_client_for_presign()
+        return s3.generate_presigned_url(
+            ClientMethod="get_object",
+            Params={"Bucket": s3_bucket, "Key": key},
+            ExpiresIn=max(60, int(expires_in)),
+            HttpMethod="GET",
+        )
+    except Exception:
+        logger.warning("presigned GET failed for key=%s", key, exc_info=True)
+        return None
+
+
+def put_object_and_wait(full_path: str, s3_key: str, *, content_type: str = "") -> str:
+    """Always PutObject (NFC key) and wait until the S3 API can see it."""
+    import boto3
+
+    s3_bucket = utils.get_s3_bucket()
+    if not s3_bucket:
+        raise RuntimeError("S3 bucket is not configured.")
+    key = _nfc_s3_key(s3_key)
+    region = utils.get_aws_region()
+    s3 = boto3.client("s3", region_name=region)
+    put_params = {"Bucket": s3_bucket, "Key": key}
+    if content_type and content_type != "no info":
+        put_params["ContentType"] = content_type
+    else:
+        put_params["ContentType"] = "application/octet-stream"
+    with open(full_path, "rb") as f:
+        put_params["Body"] = f.read()
+    s3.put_object(**put_params)
+    _wait_for_s3_object(s3, bucket=s3_bucket, key=key)
+    logger.info("uploaded artifact to s3://%s/%s", s3_bucket, key)
+    return key
 
 
 def build_s3_key(filepath: str, *, content_type: str = "") -> str:
@@ -218,17 +307,16 @@ def _is_under_workspace(full_path: str) -> bool:
 
 @tool
 def upload_file_to_s3(filepath: str) -> str:
-    """Upload a local file to S3 and return the download URL.
+    """Upload a local file to S3 and return view/download URLs.
 
     Args:
         filepath: Path under application/ (e.g. 'artifacts/report.pdf' or 'application/artifacts/report.pdf').
 
     Returns:
-        The download URL, or an error message.
+        Stable View URL plus a short-lived Download presigned GET URL, or an error.
     """
     logger.info(f"###### upload_file_to_s3: {filepath} ######")
     try:
-        import boto3
         from urllib import parse as url_parse
 
         s3_bucket = utils.get_s3_bucket()
@@ -246,37 +334,33 @@ def upload_file_to_s3(filepath: str) -> str:
         mount_key = workspace_mount_object_key(full_path)
         if mount_key and is_shareable_s3_key(mount_key):
             s3_key = mount_key
-            logger.info("artifact already on workspace mount: %s", s3_key)
         else:
             s3_key = build_s3_key(filepath, content_type=content_type)
             if not is_shareable_s3_key(s3_key):
                 s3_key = f"docs/{_safe_basename(s3_key)}"
 
-            region = utils.get_aws_region()
-            logger.info("S3 put_object key=%s (from filepath=%r)", s3_key, filepath)
-            s3 = boto3.client("s3", region_name=region)
-
-            put_params = {
-                "Bucket": s3_bucket,
-                "Key": s3_key,
-            }
-            if content_type and content_type != "no info":
-                put_params["ContentType"] = content_type
-
-            with open(full_path, "rb") as f:
-                put_params["Body"] = f.read()
-                s3.put_object(**put_params)
-
+        # Always PutObject: mount presence can lag the S3 API used by viewers.
+        s3_key = put_object_and_wait(full_path, s3_key, content_type=content_type)
         region = utils.get_aws_region()
-
+        lines = ["Upload complete."]
         sharing_url = utils.get_sharing_url()
         if sharing_url:
-            url = f"{sharing_url}/{url_parse.quote(s3_key)}"
-            return f"Upload complete: {url}"
-        return (
-            "Upload complete: "
-            f"{s3_uri_to_console_url(f's3://{s3_bucket}/{s3_key}', region)}"
+            lines.append(f"View: {sharing_url}/{url_parse.quote(s3_key)}")
+        else:
+            lines.append(
+                "View: "
+                f"{s3_uri_to_console_url(f's3://{s3_bucket}/{s3_key}', region)}"
+            )
+        download_url = _presigned_get_url_for_key(s3_key)
+        if download_url:
+            lines.append(
+                f"Download (expires in {_ARTIFACT_PRESIGN_GET_EXPIRES}s): {download_url}"
+            )
+        lines.append(
+            "For .md/.json/.csv prefer the View URL in the reply "
+            "(in-app viewer). Use Download for direct file save."
         )
+        return "\n".join(lines)
 
     except Exception:
         logger.error("S3 upload failed for %r", filepath, exc_info=True)
