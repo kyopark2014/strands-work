@@ -82,6 +82,8 @@ SHARED_CLOUDFRONT_SIGNING_KEY_NAMES = (
     SHARED_RUNTIME_SIGNING_KEY_NAME,
 )
 CLOUDFRONT_S3_SIGNED_PATHS = ("/images/*", "/docs/*", "/artifacts/*", "/*/artifacts/*")
+# Must precede the S3 patterns: "/*/artifacts/*" would otherwise capture /api/artifacts/view/*.
+CLOUDFRONT_ALB_API_PATH = "/api/*"
 # Prefer a project custom ResponseHeadersPolicy (security headers + strip origin Server).
 # Managed SecurityHeadersPolicy (67f7725c-…) does not remove Server: uvicorn.
 _cloudfront_response_headers_policy_id: Optional[str] = None
@@ -5919,6 +5921,29 @@ def _cloudfront_s3_cache_behavior(
     return behavior
 
 
+def _cloudfront_alb_api_cache_behavior(alb_origin_id: str) -> Dict[str, object]:
+    """``/api/*`` behavior routed to the ALB (same policies as the default behavior).
+
+    ``/*/artifacts/*`` (S3, signed cookies) also matches ``/api/artifacts/view/...``
+    because ``*`` spans ``/``. This behavior must be listed *before* the S3 ones so
+    the artifact viewer API reaches the app instead of failing with a CloudFront 403.
+    """
+    return {
+        "PathPattern": CLOUDFRONT_ALB_API_PATH,
+        "TargetOriginId": alb_origin_id,
+        "ViewerProtocolPolicy": "redirect-to-https",
+        "AllowedMethods": {
+            "Quantity": 7,
+            "Items": ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"],
+            "CachedMethods": {"Quantity": 2, "Items": ["GET", "HEAD"]},
+        },
+        "CachePolicyId": "4135ea2d-6df8-44a3-9df3-4b5a84be39ad",
+        "OriginRequestPolicyId": "216adef6-5c7f-47e4-b989-5492eafa07d3",
+        "ResponseHeadersPolicyId": cloudfront_response_headers_policy_id(),
+        "Compress": True,
+    }
+
+
 def _behavior_has_trusted_key_group(behavior: Dict, key_group_id: str) -> bool:
     tkg = behavior.get("TrustedKeyGroups") or {}
     if not tkg.get("Enabled"):
@@ -5941,6 +5966,20 @@ def ensure_cloudfront_s3_signed_cookies(dist_id: str, key_group_id: str) -> None
     changed = False
 
     by_path = {item.get("PathPattern"): item for item in items}
+    if CLOUDFRONT_ALB_API_PATH not in by_path:
+        items.insert(0, _cloudfront_alb_api_cache_behavior(f"alb-{project_name}"))
+        changed = True
+        logger.info(f"  + CloudFront behavior {CLOUDFRONT_ALB_API_PATH} (ALB, before S3 paths)")
+    else:
+        api_idx = next(i for i, it in enumerate(items) if it.get("PathPattern") == CLOUDFRONT_ALB_API_PATH)
+        first_s3_idx = min(
+            (i for i, it in enumerate(items) if it.get("PathPattern") in CLOUDFRONT_S3_SIGNED_PATHS),
+            default=None,
+        )
+        if first_s3_idx is not None and api_idx > first_s3_idx:
+            items.insert(first_s3_idx, items.pop(api_idx))
+            changed = True
+            logger.info(f"  ✓ CloudFront behavior {CLOUDFRONT_ALB_API_PATH}: moved before S3 paths")
     for path_pattern in CLOUDFRONT_S3_SIGNED_PATHS:
         existing = by_path.get(path_pattern)
         if existing is None:
@@ -6255,12 +6294,15 @@ def create_cloudfront_distribution(
             "Compress": True
         },
         "CacheBehaviors": {
-            "Quantity": len(CLOUDFRONT_S3_SIGNED_PATHS),
+            "Quantity": len(CLOUDFRONT_S3_SIGNED_PATHS) + 1,
             "Items": [
-                _cloudfront_s3_cache_behavior(
-                    path_pattern, f"s3-{project_name}", key_group_id
-                )
-                for path_pattern in CLOUDFRONT_S3_SIGNED_PATHS
+                _cloudfront_alb_api_cache_behavior(f"alb-{project_name}"),
+                *[
+                    _cloudfront_s3_cache_behavior(
+                        path_pattern, f"s3-{project_name}", key_group_id
+                    )
+                    for path_pattern in CLOUDFRONT_S3_SIGNED_PATHS
+                ],
             ],
         },
         "Origins": {
